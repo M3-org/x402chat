@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crypto SuperChat Overlay</title>
+    <style>
+      :root {
+        --bg: rgba(0, 0, 0, 0.65);
+        --accent: #8fd3ff;
+        --amount: #ffd166;
+        --radius: 14px;
+      }
+
+      /* Transparent page background - OBS optimized */
+      html, body {
+        height: 100%;
+        margin: 0px auto;
+        background-color: rgba(0, 0, 0, 0);
+        overflow: hidden;
+        display: grid;
+        place-items: center;
+        font-family:
+          system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial,
+          sans-serif;
+      }
+
+      .superchat {
+        max-width: 680px;
+        width: min(92vw, 680px);
+        color: #fff;
+        opacity: 0;
+        transform: translateY(50px);
+        transition: all 0.5s ease;
+      }
+
+      .superchat.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .superchat.hide {
+        opacity: 0;
+        transform: translateY(-50px);
+      }
+
+      .sc-header {
+        font-weight: 600;
+        font-size: 22px;
+        margin-bottom: 8px;
+        line-height: 1.4;
+      }
+
+      .sc-name {
+        color: #8fd3ff;
+        font-weight: 600;
+        text-shadow:
+          0 0 2px rgba(0, 0, 0, 0.8),
+          0 0 4px rgba(0, 0, 0, 0.8),
+          0 0 6px rgba(0, 0, 0, 0.7);
+      }
+
+      .sc-sent {
+        color: #fff;
+        font-weight: 500;
+        text-shadow:
+          0 0 2px rgba(0, 0, 0, 0.8),
+          0 0 4px rgba(0, 0, 0, 0.8),
+          0 0 6px rgba(0, 0, 0, 0.7);
+      }
+
+      .sc-amount {
+        color: #ffd166;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        text-shadow:
+          0 0 2px rgba(0, 0, 0, 0.8),
+          0 0 4px rgba(0, 0, 0, 0.8),
+          0 0 6px rgba(0, 0, 0, 0.7);
+      }
+
+      .sc-msg {
+        line-height: 1.4;
+        font-size: 22px;
+        font-weight: 500;
+        white-space: pre-wrap;
+        display: inline;
+        color: #ffffff;
+        text-shadow:
+          0 0 2px rgba(0, 0, 0, 0.8),
+          0 0 4px rgba(0, 0, 0, 0.8),
+          0 0 6px rgba(0, 0, 0, 0.7);
+      }
+
+      /* blinking caret implemented with a sibling span for cross-compat */
+      .caret {
+        display: inline-block;
+        width: 2px;
+        height: 1em;
+        vertical-align: bottom;
+        background: #fff;
+        margin-left: 2px;
+        animation: blink 1s steps(1) infinite;
+        box-shadow: 0 0 2px rgba(0, 0, 0, 0.8), 0 0 4px rgba(0, 0, 0, 0.8);
+      }
+      @keyframes blink {
+        50% {
+          opacity: 0;
+        }
+      }
+
+      .overlay-container {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      #donationContainer {
+        width: 100%;
+        max-width: 680px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="overlay-container">
+      <div id="donationContainer">
+        <!-- Donations appear here -->
+      </div>
+    </div>
+
+    <script>
+      class SuperchatOverlay {
+        constructor() {
+          this.ws = null;
+          this.container = document.getElementById("donationContainer");
+          this.connect();
+        }
+
+        connect() {
+          const params = new URLSearchParams(window.location.search);
+          const backendHost = params.get("backend") ||
+            window.location.host;
+          const wsUrl = `ws://${backendHost}/ws`;
+          this.ws = new WebSocket(wsUrl);
+
+          this.ws.onopen = () => {
+            console.log("✅ Overlay connected");
+          };
+
+          this.ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.type === "donation") {
+              this.showDonation(data.data);
+            } else if (data.type === "hide_donation") {
+              this.hideDonation(data.signature);
+            } else if (data.type === "clear_overlay") {
+              this.clearOverlay();
+            }
+          };
+
+          this.ws.onclose = () => {
+            console.log("❌ Overlay disconnected");
+            setTimeout(() => this.connect(), 3000);
+          };
+        }
+
+        showDonation(donation) {
+          console.log("💰 New donation:", donation);
+
+          // Only show donations with memos
+          if (!donation.memo) {
+            return;
+          }
+
+          // Create superchat element
+          const superchatEl = document.createElement("div");
+          superchatEl.className = "superchat";
+          superchatEl.dataset.signature = donation.signature; // Add signature for tracking
+
+          superchatEl.innerHTML = `
+                    <div class="sc-header">
+                        <span class="sc-name">${
+            this.truncateAddress(donation.sender)
+          }</span>
+                        <span class="sc-sent"> sent </span>
+                        <span class="sc-amount">${donation.token_symbol} ${
+            parseFloat(donation.amount).toFixed(2)
+          }</span>
+                    </div>
+                    <div class="sc-msg" id="typed-${Date.now()}" data-message="${donation.memo}"></div><span class="caret" id="caret-${Date.now()}"></span>
+                `;
+
+          // Clear container and add new superchat
+          this.container.innerHTML = "";
+          this.container.appendChild(superchatEl);
+
+          // Show animation
+          setTimeout(() => {
+            superchatEl.classList.add("show");
+            this.startTypewriter(superchatEl);
+
+            // Play notification sound 200ms after hitting play
+            setTimeout(() => {
+              this.playNotificationSound();
+            }, 200);
+          }, 100);
+        }
+
+        playNotificationSound() {
+          try {
+            const audio = new Audio("/static/notification.mp3");
+            audio.volume = 0.5; // 50% volume
+            audio.play().catch((e) => {
+              console.log("Audio play failed:", e);
+              // Audio might be blocked by browser policy
+            });
+          } catch (error) {
+            console.log("Audio creation failed:", error);
+          }
+        }
+
+        hideDonation(signature) {
+          console.log("🗑️ Hiding donation:", signature);
+          const superchatEl = this.container.querySelector(
+            `[data-signature="${signature}"]`,
+          );
+          if (superchatEl) {
+            superchatEl.classList.add("hide");
+            setTimeout(() => {
+              if (superchatEl.parentNode) {
+                superchatEl.parentNode.removeChild(superchatEl);
+              }
+            }, 500);
+          }
+        }
+
+        clearOverlay() {
+          console.log("🧹 Clearing overlay");
+          this.container.innerHTML = "";
+        }
+
+        startTypewriter(superchatEl) {
+          const el = superchatEl.querySelector('[id^="typed-"]');
+          const caret = superchatEl.querySelector('[id^="caret-"]');
+          const text = (el.getAttribute("data-message") || "")
+            .toString();
+          el.textContent = "";
+
+          // Above-average reading/typing speed
+          const cps = 18; // characters per second
+          const msPerChar = 1000 / cps;
+
+          let i = 0; // next char index to show
+          let start = null;
+
+          function frame(ts) {
+            if (start === null) start = ts;
+            // how many characters should be visible by now?
+            const should = Math.floor((ts - start) / msPerChar);
+            if (should > i) {
+              el.textContent = text.slice(
+                0,
+                Math.min(should, text.length),
+              );
+              i = should;
+            }
+            if (i < text.length) {
+              requestAnimationFrame(frame);
+            } else {
+              // done typing
+              caret.remove();
+            }
+          }
+
+          requestAnimationFrame(frame);
+        }
+
+        truncateAddress(address) {
+          if (!address || address.length < 12) return address;
+          return `${address.slice(0, 6)}...${address.slice(-4)}`;
+        }
+      }
+
+      // Start overlay when page loads
+      window.addEventListener("DOMContentLoaded", () => {
+        new SuperchatOverlay();
+      });
+    </script>
+  </body>
+</html>

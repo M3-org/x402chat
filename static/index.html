@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html data-theme="dark">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>x402 Chat - Privacy-Aware Crypto Donations on Solana</title>
+  <meta name="description"
+    content="Privacy-aware crypto super-chat for streamers. Accept USDC donations with moderation, TTS, and OBS integration on Solana.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="global.css">
+  <link rel="stylesheet" href="index.css">
+  <script type="module" src="index.js"></script>
+</head>
+
+<body>
+  <div class="container">
+    <header class="landing-header">
+      <div class="landing-nav">
+        <div class="logo-container">
+          <img src="x402chat.png" alt="x402 Chat" class="logo-image" />
+          <span class="beta-badge">Beta</span>
+        </div>
+        <button id="signin" class="btn-signin">Connect Wallet</button>
+      </div>
+    </header>
+
+    <main class="landing-main">
+      <section class="hero-section">
+        <img src="x402chat.png" alt="x402 Chat" class="hero-logo" />
+        <h2 class="hero-title">Privacy-aware crypto donations for streamers</h2>
+        <p class="hero-subtitle">Accept USDC on Solana. Minimal platform data collection. <span
+            class="highlight">Network fees under $0.01.</span> <span class="highlight">Confirmations under 1
+            second.</span></p>
+        <div class="hero-badges">
+          <div class="hero-badge">Built on x402 Protocol</div>
+          <div class="hero-badge">As seen on <a href="https://www.colosseum.com/" target="_blank" rel="noopener"
+              class="colosseum-link">Colosseum</a></div>
+        </div>
+      </section>
+
+      <section class="demo-section">
+        <h3 class="section-title">See it in action</h3>
+        <div class="demo-grid">
+          <div class="demo-card">
+            <div class="demo-label">Donation Page</div>
+            <div class="demo-preview">
+              <div class="demo-content">
+                <div class="demo-form">
+                  <div class="demo-input">Your Name</div>
+                  <div class="demo-input">$5.00</div>
+                  <div class="demo-textarea">Your message here...</div>
+                  <div class="demo-button">Send Donation</div>
+                </div>
+              </div>
+            </div>
+            <p>Clean, simple donation form with real-time privacy scoring</p>
+          </div>
+
+          <div class="demo-card">
+            <div class="demo-label">Dashboard</div>
+            <div class="demo-preview">
+              <div class="demo-content">
+                <div class="demo-header">
+                  <div class="demo-tab active">Pending <span class="demo-badge">3</span></div>
+                  <div class="demo-tab">Approved</div>
+                  <div class="demo-tab">Rejected</div>
+                </div>
+                <div class="demo-table">
+                  <div class="demo-row">
+                    <div class="demo-cell">Alice • $5.00</div>
+                    <div class="demo-actions">
+                      <div class="demo-btn">▶️ Play</div>
+                      <div class="demo-btn">⏭️ Skip</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <p>Moderate every donation before it appears on stream</p>
+          </div>
+
+          <div class="demo-card">
+            <div class="demo-label">OBS Overlay</div>
+            <div class="demo-preview overlay">
+              <div class="demo-content">
+                <div class="demo-superchat">
+                  <div class="demo-sc-header">Alice sent $5.00</div>
+                  <div class="demo-sc-message">Thanks for the stream!<span class="demo-cursor">|</span></div>
+                </div>
+              </div>
+            </div>
+            <p>Animated overlay with configurable TTS</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="features-section">
+        <h3 class="section-title">Key features</h3>
+        <div class="features-grid">
+          <div class="feature-card">
+            <div class="feature-icon">🎯</div>
+            <div class="feature-content">
+              <h4>Real-time moderation</h4>
+              <p>Approve or skip donations before they appear on stream.</p>
+            </div>
+          </div>
+
+          <div class="feature-card">
+            <div class="feature-icon">🗣️</div>
+            <div class="feature-content">
+              <h4>Customizable TTS</h4>
+              <p>Built-in text-to-speech with voice, speed, and pitch control.</p>
+            </div>
+          </div>
+
+          <div class="feature-card">
+            <div class="feature-icon">📺</div>
+            <div class="feature-content">
+              <h4>OBS browser source</h4>
+              <p>Drop-in overlay with animations. No plugins required.</p>
+            </div>
+          </div>
+
+          <div class="feature-card">
+            <div class="feature-icon">🌐</div>
+            <div class="feature-content">
+              <h4>Open source</h4>
+              <p>Built on <a href="https://www.x402.org/" target="_blank" rel="noopener">x402 protocol</a>. Fully
+                auditable on <a href="https://github.com/M3-org/x402chat" target="_blank" rel="noopener">GitHub</a>.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <footer class="landing-footer">
+      <div class="footer-content">
+        <span>Built with <a href="https://www.x402.org/" target="_blank" rel="noopener">x402</a> Protocol</span>
+        <span class="footer-separator">•</span>
+        <span>Powered by Solana</span>
+        <span class="footer-separator">•</span>
+        <a href="https://github.com/M3-org/x402chat" target="_blank" rel="noopener" class="footer-link">
+          <svg class="github-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path
+              d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+          </svg>
+          Open Source
+        </a>
+      </div>
+    </footer>
+  </div>
+</body>
+
+</html>

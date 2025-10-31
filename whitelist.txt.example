@@ -1,0 +1,8 @@
+# Whitelist file for authorized wallet addresses
+# Add one Solana wallet address per line
+# Lines starting with # are ignored as comments
+# Empty lines are ignored
+
+# Example addresses (replace with your actual addresses):
+# YourSolanaWalletAddress1111111111111111111
+# AnotherWalletAddress2222222222222222222222

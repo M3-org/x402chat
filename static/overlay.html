@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>x402 Chat / Overlay</title>
+  <style>
+    :root {
+      --bg: rgba(0, 0, 0, 0.65);
+      --accent: #06b6d4;
+      --accent-secondary: #a855f7;
+      --amount: #f59e0b;
+      --rounded: 0.6rem;
+    }
+
+    /* Transparent page background - OBS optimized */
+    html,
+    body {
+      height: 100%;
+      margin: 0px auto;
+      background-color: rgba(0, 0, 0, 0);
+      overflow: hidden;
+      display: grid;
+      place-items: center;
+      font-family:
+        system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial,
+        sans-serif;
+    }
+
+    .superchat {
+      width: 680px;
+      height: 510px;
+      /* 4:3 aspect ratio (680 * 0.75) */
+      max-width: 90vw;
+      max-height: 67.5vw;
+      /* Maintains 4:3 when scaled */
+      color: #fff;
+      opacity: 0;
+      transform: translateY(50px);
+      transition: all 0.5s ease;
+      padding: 16px 20px;
+      box-sizing: border-box;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .superchat.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .superchat.hide {
+      opacity: 0;
+      transform: translateY(-50px);
+    }
+
+    .sc-header {
+      font-weight: 600;
+      font-size: 36px;
+      margin-bottom: 8px;
+      line-height: 1.4;
+      padding: 2px 0;
+      flex-shrink: 0;
+      /* Keep header size fixed */
+    }
+
+    .sc-name {
+      color: var(--accent);
+      font-weight: 600;
+      -webkit-text-stroke: 1px black;
+      text-stroke: 1px black;
+    }
+
+    .sc-sent {
+      color: #fff;
+      font-weight: 500;
+      -webkit-text-stroke: 1px black;
+      text-stroke: 1px black;
+    }
+
+    .sc-amount {
+      color: var(--amount);
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      -webkit-text-stroke: 1px black;
+      text-stroke: 1px black;
+    }
+
+    .sc-msg {
+      line-height: 1.4;
+      font-size: 36px;
+      font-weight: 500;
+      white-space: pre-wrap;
+      display: block;
+      color: #ffffff;
+      padding: 2px 0;
+      margin-top: 4px;
+      word-wrap: break-word;
+      overflow-wrap: break-word;
+      word-break: break-all;
+      flex-grow: 1;
+      /* Message area takes remaining space */
+      overflow: hidden;
+      -webkit-text-stroke: 1px black;
+      text-stroke: 1px black;
+    }
+
+    /* Scale entire container uniformly to maintain 4:3 ratio */
+    @media (max-width: 768px) {
+      .superchat {
+        transform: scale(0.8) translateY(50px);
+      }
+
+      .superchat.show {
+        transform: scale(0.8) translateY(0);
+      }
+
+      .superchat.hide {
+        transform: scale(0.8) translateY(-50px);
+      }
+    }
+
+    @media (max-width: 480px) {
+      .superchat {
+        transform: scale(0.6) translateY(50px);
+      }
+
+      .superchat.show {
+        transform: scale(0.6) translateY(0);
+      }
+
+      .superchat.hide {
+        transform: scale(0.6) translateY(-50px);
+      }
+    }
+
+    /* blinking caret implemented with a sibling span for cross-compat */
+    .caret {
+      display: inline-block;
+      width: 2px;
+      height: 1em;
+      vertical-align: bottom;
+      background: #fff;
+      margin-left: 2px;
+      animation: blink 1s steps(1) infinite;
+      box-shadow: 0 0 2px rgba(0, 0, 0, 0.8), 0 0 4px rgba(0, 0, 0, 0.8);
+    }
+
+    @keyframes blink {
+      50% {
+        opacity: 0;
+      }
+    }
+
+    .overlay-container {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #donationContainer {
+      width: 100%;
+      max-width: 680px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="overlay-container">
+    <div id="donationContainer">
+      <!-- Donations appear here -->
+    </div>
+  </div>
+
+  <script>
+    class SuperchatOverlay {
+      constructor() {
+        this.ws = null;
+        this.container = document.getElementById("donationContainer");
+        this.initTTS();
+        this.loadTTSSettings();
+        this.connect();
+      }
+
+      initTTS() {
+        // Check if speech synthesis is available
+        if ('speechSynthesis' in window) {
+          this.ttsEnabled = true;
+          this.synth = window.speechSynthesis;
+          this.voices = [];
+
+          // Load voices (they may load asynchronously)
+          this.loadVoices();
+          if (speechSynthesis.onvoiceschanged !== undefined) {
+            speechSynthesis.onvoiceschanged = () => this.loadVoices();
+          }
+
+          console.log("✅ TTS initialized");
+        } else {
+          this.ttsEnabled = false;
+          console.warn("⚠️ Speech Synthesis API not available");
+        }
+      }
+
+      loadVoices() {
+        this.voices = this.synth.getVoices();
+        console.log(`📢 Loaded ${this.voices.length} TTS voices`);
+      }
+
+      loadTTSSettings() {
+        // Load TTS settings from URL params or localStorage
+        const params = new URLSearchParams(window.location.search);
+
+        // TTS enabled (default: true)
+        this.ttsEnabled = params.get('tts') !== 'false' &&
+                         localStorage.getItem('ttsEnabled') !== 'false';
+
+        // Voice index (default: 0, first available voice)
+        this.ttsVoiceIndex = parseInt(params.get('voice') ||
+                                      localStorage.getItem('ttsVoice') || '0');
+
+        // Rate (0.1 - 10, default: 1)
+        this.ttsRate = parseFloat(params.get('rate') ||
+                                  localStorage.getItem('ttsRate') || '1');
+
+        // Pitch (0 - 2, default: 1)
+        this.ttsPitch = parseFloat(params.get('pitch') ||
+                                   localStorage.getItem('ttsPitch') || '1');
+
+        // Volume (0 - 1, default: 1)
+        this.ttsVolume = parseFloat(params.get('volume') ||
+                                    localStorage.getItem('ttsVolume') || '1');
+
+        console.log("🔧 TTS settings:", {
+          enabled: this.ttsEnabled,
+          voiceIndex: this.ttsVoiceIndex,
+          rate: this.ttsRate,
+          pitch: this.ttsPitch,
+          volume: this.ttsVolume
+        });
+      }
+
+      speak(text) {
+        if (!this.ttsEnabled || !this.synth) {
+          return;
+        }
+
+        // Cancel any ongoing speech
+        this.synth.cancel();
+
+        const utterance = new SpeechSynthesisUtterance(text);
+
+        // Apply settings
+        if (this.voices.length > 0 && this.ttsVoiceIndex < this.voices.length) {
+          utterance.voice = this.voices[this.ttsVoiceIndex];
+        }
+        utterance.rate = this.ttsRate;
+        utterance.pitch = this.ttsPitch;
+        utterance.volume = this.ttsVolume;
+
+        // Event listeners for debugging
+        utterance.onstart = () => {
+          console.log("🗣️ TTS started");
+        };
+
+        utterance.onend = () => {
+          console.log("✅ TTS finished");
+        };
+
+        utterance.onerror = (event) => {
+          console.error("❌ TTS error:", event.error);
+        };
+
+        this.synth.speak(utterance);
+      }
+
+      connect() {
+        const params = new URLSearchParams(window.location.search);
+        const backendHost = params.get("backend") ||
+          window.location.host;
+        const wsUrl = `ws://${backendHost}/ws`;
+        this.ws = new WebSocket(wsUrl);
+
+        this.ws.onopen = () => {
+          console.log("✅ Overlay connected");
+        };
+
+        this.ws.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          if (data.type === "donation") {
+            this.showDonation(data.data);
+          } else if (data.type === "hide_donation") {
+            this.hideDonation(data.signature);
+          } else if (data.type === "clear_overlay") {
+            this.clearOverlay();
+          }
+        };
+
+        this.ws.onclose = () => {
+          console.log("❌ Overlay disconnected");
+          setTimeout(() => this.connect(), 3000);
+        };
+      }
+
+      showDonation(donation) {
+        console.log("💰 New donation:", donation);
+
+        // Only show donations with messages (memo for legacy, message for x402)
+        const messageContent = donation.message || donation.memo;
+        if (!messageContent) {
+          return;
+        }
+
+        // Create superchat element
+        const superchatEl = document.createElement("div");
+        superchatEl.className = "superchat";
+        // Add identifier for tracking (signature for memo, id for x402)
+        const identifier = donation.signature || donation.id;
+        superchatEl.dataset.signature = identifier;
+
+        superchatEl.innerHTML = `
+                    <div class="sc-header">
+                        <span class="sc-name">${donation.sender_name || "Anon"
+          }</span>
+                        <span class="sc-sent"> sent </span>
+                        <span class="sc-amount">$${parseFloat(donation.amount).toFixed(2)
+          }</span>
+                    </div>
+                    <div class="sc-msg" id="typed-${Date.now()}" data-message="${donation.message || donation.memo || ""
+          }"></div><span class="caret" id="caret-${Date.now()}"></span>
+                `;
+
+        // Clear container and add new superchat
+        this.container.innerHTML = "";
+        this.container.appendChild(superchatEl);
+
+        // Show animation
+        setTimeout(() => {
+          superchatEl.classList.add("show");
+          this.startTypewriter(superchatEl);
+
+          // Play notification sound 200ms after hitting play
+          setTimeout(() => {
+            this.playNotificationSound();
+          }, 200);
+
+          // Speak donation using TTS
+          setTimeout(() => {
+            this.speakDonation(donation);
+          }, 400);
+        }, 100);
+      }
+
+      speakDonation(donation) {
+        const senderName = donation.sender_name || "Anonymous";
+        const amount = parseFloat(donation.amount).toFixed(2);
+        const message = donation.message || donation.memo || "";
+
+        // Construct TTS text
+        const ttsText = `${senderName} sent ${amount} dollars. ${message}`;
+
+        console.log("🗣️ Speaking:", ttsText);
+        this.speak(ttsText);
+      }
+
+      playNotificationSound() {
+        try {
+          const audio = new Audio("/static/notification.mp3");
+          audio.volume = 0.5; // 50% volume
+          audio.play().catch((e) => {
+            console.log("Audio play failed:", e);
+            // Audio might be blocked by browser policy
+          });
+        } catch (error) {
+          console.log("Audio creation failed:", error);
+        }
+      }
+
+      hideDonation(signature) {
+        console.log("🗑️ Hiding donation:", signature);
+        const superchatEl = this.container.querySelector(
+          `[data-signature="${signature}"]`,
+        );
+        if (superchatEl) {
+          superchatEl.classList.add("hide");
+          setTimeout(() => {
+            if (superchatEl.parentNode) {
+              superchatEl.parentNode.removeChild(superchatEl);
+            }
+          }, 500);
+        }
+      }
+
+      clearOverlay() {
+        console.log("🧹 Clearing overlay");
+        this.container.innerHTML = "";
+      }
+
+      startTypewriter(superchatEl) {
+        const el = superchatEl.querySelector('[id^="typed-"]');
+        const caret = superchatEl.querySelector('[id^="caret-"]');
+        const text = (el.getAttribute("data-message") || "")
+          .toString();
+        el.textContent = "";
+
+        // Above-average reading/typing speed
+        const cps = 18; // characters per second
+        const msPerChar = 1000 / cps;
+
+        let i = 0; // next char index to show
+        let start = null;
+
+        function frame(ts) {
+          if (start === null) start = ts;
+          // how many characters should be visible by now?
+          const should = Math.floor((ts - start) / msPerChar);
+          if (should > i) {
+            el.textContent = text.slice(
+              0,
+              Math.min(should, text.length),
+            );
+            i = should;
+          }
+          if (i < text.length) {
+            requestAnimationFrame(frame);
+          } else {
+            // done typing
+            caret.remove();
+          }
+        }
+
+        requestAnimationFrame(frame);
+      }
+
+      truncateAddress(address) {
+        if (!address || address.length < 12) return address;
+        return `${address.slice(0, 6)}...${address.slice(-4)}`;
+      }
+    }
+
+    // Start overlay when page loads
+    window.addEventListener("DOMContentLoaded", () => {
+      new SuperchatOverlay();
+    });
+  </script>
+</body>
+
+</html>

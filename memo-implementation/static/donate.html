@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <title>SuperChat – USDC Tip</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      font-family:
+        system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial,
+        sans-serif;
+      margin: 2rem;
+    }
+
+    form {
+      display: grid;
+      gap: 0.75rem;
+      max-width: 520px;
+    }
+
+    input,
+    textarea,
+    button {
+      font: inherit;
+      padding: 0.6rem 0.7rem;
+      border-radius: 0.6rem;
+      border: 1px solid #ddd;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+    }
+
+    .muted {
+      color: #666;
+      font-size: 0.9rem;
+    }
+
+    .ok {
+      color: #067d1f;
+    }
+
+    .err {
+      color: #a60000;
+      white-space: pre-wrap;
+    }
+
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Crypto SuperChat</h1>
+  <p class="muted">Phantom on Solana • USDC → message</p>
+
+  <form>
+    <div class="row">
+      <input id="senderName" maxlength="12" placeholder="name (max 12)" required />
+      <input id="amount" type="number" min="0.01" step="0.01" value="0.01" />
+    </div>
+    <textarea id="message" maxlength="200" rows="3" placeholder="your message (max 200)"></textarea>
+
+    <button type="button" id="phantomBtn">Pay with Phantom</button>
+    <div id="status" class="muted"></div>
+    <div id="success" class="ok hidden"></div>
+    <div id="error" class="err hidden"></div>
+  </form>
+
+  <script type="module">
+    import {
+      clusterApiUrl,
+      Connection,
+      PublicKey,
+      Transaction,
+    } from "https://esm.sh/@solana/web3.js@1.95.3";
+    import {
+      createAssociatedTokenAccountInstruction,
+      createTransferInstruction,
+      getAssociatedTokenAddressSync,
+    } from "https://esm.sh/@solana/spl-token@0.4.9";
+
+    const $ = (id) => document.getElementById(id);
+    const API_BASE = window.location.origin;
+    const DONATE_URL = `${API_BASE}/api/donate`;
+
+    const set = (el, msg) => (el.textContent = msg);
+    const show = (msg) => set($("status"), msg);
+    const ok = (msg) => {
+      $("success").classList.remove("hidden");
+      set($("success"), msg);
+      $("error").classList.add("hidden");
+    };
+    const err = (msg) => {
+      $("error").classList.remove("hidden");
+      set($("error"), msg);
+      $("success").classList.add("hidden");
+    };
+
+    async function getChallenge(payload) {
+      const res = await fetch(DONATE_URL, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload),
+      });
+      if (res.status !== 402) {
+        const t = await res.text();
+        throw new Error(`Expected 402, got ${res.status}: ${t}`);
+      }
+      const j = await res.json();
+      const acc = j?.detail?.accepts?.[0];
+      if (!acc) throw new Error("No x402 accepts returned");
+      return acc; // { network, asset, payTo, amount, description }
+    }
+
+    function toBase64(u8) {
+      // stable base64 for big Uint8Arrays
+      let s = "", cs = 0x8000;
+      for (let i = 0; i < u8.length; i += cs) {
+        s += String.fromCharCode.apply(null, u8.subarray(i, i + cs));
+      }
+      return btoa(s);
+    }
+
+    async function payWithPhantom() {
+      try {
+        const provider = window?.phantom?.solana;
+        if (!provider?.isPhantom) {
+          throw new Error("Phantom not found.");
+        }
+
+        show("Connecting wallet…");
+        const {publicKey} = await provider.connect();
+
+        const payload = {
+          sender_name: $("senderName").value || "anon",
+          message: $("message").value || "",
+          amount: parseFloat($("amount").value || "0.01"),
+        };
+
+        show("Requesting x402 challenge…");
+        const accept = await getChallenge(payload);
+        if ((accept.network || "").toLowerCase() !== "solana") {
+          throw new Error(
+            `Server expects network=${accept.network}. Set X402_NETWORK=solana.`,
+          );
+        }
+
+        const conn = new Connection(
+          "https://mainnet.helius-rpc.com/?api-key=" +
+          "confirmed",
+        );
+        const mint = new PublicKey(accept.asset); // USDC mint
+        const merchantOwner = new PublicKey(accept.payTo);
+        const payer = new PublicKey(publicKey.toString());
+
+        const payerAta = getAssociatedTokenAddressSync(mint, payer);
+        const merchAta = getAssociatedTokenAddressSync(
+          mint,
+          merchantOwner,
+        );
+
+        const ui = Number(accept.amount ?? payload.amount ?? 0.01);
+        const amount = Math.round(ui * 1_000_000); // USDC 6 decimals
+
+        // Check if merchant ATA exists first
+        const merchAtaInfo = await conn.getAccountInfo(merchAta);
+
+        const ix = [];
+        if (!merchAtaInfo) {
+          // Only create ATA if it doesn't exist
+          ix.push(createAssociatedTokenAccountInstruction(
+            payer, // payer funds the account creation
+            merchAta, // new account address
+            merchantOwner, // owner of the new account
+            mint, // mint of the token
+          ));
+        }
+        ix.push(
+          createTransferInstruction(
+            payerAta,
+            merchAta,
+            payer,
+            amount,
+          ),
+        );
+
+        show("Signing…");
+        // Get fresh blockhash right before signing to avoid expiration
+        const {blockhash} = await conn.getLatestBlockhash(
+          "finalized",
+        );
+        const tx = new Transaction({
+          feePayer: payer,
+          recentBlockhash: blockhash,
+        });
+        tx.add(...ix);
+
+        const signed = await provider.signTransaction(tx);
+        const raw = signed.serialize();
+
+        // Create x402 header with signed transaction BEFORE broadcasting
+        console.log("Raw transaction length:", raw.length);
+        console.log(
+          "Base64 transaction:",
+          toBase64(raw).substring(0, 100) + "...",
+        );
+
+        const x402Header = {
+          x402Version: 1,
+          paymentPayload: {
+            x402Version: 1,
+            scheme: "exact",
+            network: "solana",
+            payload: {transaction: toBase64(raw)},
+          },
+          paymentRequirements: {
+            scheme: "exact",
+            network: "solana",
+            maxAmountRequired: "10000", // 0.01 USDC in micro-units
+            resource: `${API_BASE}/api/donate`,
+            description: accept.description ||
+              "Crypto SuperChat donation",
+            mimeType: "application/json",
+            payTo: accept.payTo,
+            maxTimeoutSeconds: 60,
+            asset: accept.asset,
+            extra: null,
+          },
+        };
+
+        console.log(
+          "x402Header:",
+          JSON.stringify(x402Header, null, 2),
+        );
+
+        show("Verifying with facilitator…");
+        const res2 = await fetch(DONATE_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-402-payment": JSON.stringify(x402Header),
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (!res2.ok) {
+          const t = await res2.text();
+          throw new Error(
+            `Server verification failed: ${res2.status} ${t}`,
+          );
+        }
+
+        show("Broadcasting transaction…");
+        const sig = await conn.sendRawTransaction(raw, {
+          skipPreflight: false,
+        });
+        console.log("Transaction signature:", sig);
+        await conn.confirmTransaction(sig, "confirmed");
+        console.log("Transaction confirmed:", sig);
+
+        const done = await res2.json();
+        ok(
+          `🎉 Payment successful! Submitted for moderation (id ${done.donation_id})`,
+        );
+        show("");
+      } catch (e) {
+        console.error(e);
+        err(e?.message || String(e));
+        show("");
+      }
+    }
+
+    document.getElementById("phantomBtn").addEventListener(
+      "click",
+      payWithPhantom,
+    );
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>x402 Chat / Dashboard</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="global.css">
+  <link rel="stylesheet" href="dashboard.css">
+  <script src="dashboard.js"></script>
+</head>
+
+<body>
+  <div class="container-lg">
+    <header class="floating-header">
+      <h2>Dashboard</h2>
+
+      <nav class="header-nav">
+        <a id="donateLink" href="#" target="_blank">
+          Donate
+          <svg class="external-link-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+            <polyline points="15 3 21 3 21 9"></polyline>
+            <line x1="10" y1="14" x2="21" y2="3"></line>
+          </svg>
+        </a>
+        <a id="overlayLink" href="/overlay" onclick="dashboard.openOverlayWindow(); return false;">
+          Overlay
+          <svg class="external-link-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+            <polyline points="15 3 21 3 21 9"></polyline>
+            <line x1="10" y1="14" x2="21" y2="3"></line>
+          </svg>
+        </a>
+        <a id="signoutLink" href="/api/auth/clear">Sign Out</a>
+      </nav>
+    </header>
+
+    <main class="dashboard-grid">
+      <aside class="sidebar">
+        <nav class="sidebar-panel island">
+          <a href="#" id="tab-pending" class="tab-active" onclick="dashboard.switchTab('pending'); return false;">
+            Pending <span id="pendingCount" class="count-badge">0</span>
+          </a>
+          <a href="#" id="tab-approved" class="tab-inactive" onclick="dashboard.switchTab('approved'); return false;">
+            Approved <span id="approvedCount" class="count-badge">0</span>
+          </a>
+          <a href="#" id="tab-rejected" class="tab-inactive" onclick="dashboard.switchTab('rejected'); return false;">
+            Rejected <span id="rejectedCount" class="count-badge">0</span>
+          </a>
+          <a href="#" id="tab-config" class="tab-inactive" onclick="dashboard.switchTab('config'); return false;">
+            Config
+          </a>
+        </nav>
+
+        <div class="status-panel island">
+          <p id="status" title="Connection Status" class="cnc-connecting">Connecting...</p>
+        </div>
+      </aside>
+
+      <div class="content-area">
+        <div id="nowPlaying" class="now-playing-panel island" style="display: none;">
+          <h3>Now Playing</h3>
+          <div class="donation-preview">
+            <div class="preview-sender"></div>
+            <div class="preview-amount"></div>
+            <div class="preview-message"></div>
+          </div>
+        </div>
+
+        <div id="donationsView">
+          <table>
+            <thead>
+              <tr>
+                <th>
+                  <button class="sort-button" onclick="dashboard.sortBy('created_at')">Time</button>
+                </th>
+                <th>
+                  <button class="sort-button" onclick="dashboard.sortBy('sender_name')">Sender</button>
+                </th>
+                <th>
+                  <button class="sort-button" onclick="dashboard.sortBy('amount')">Amount</button>
+                </th>
+                <th>
+                  <button class="sort-button" onclick="dashboard.sortBy('message')">Message</button>
+                </th>
+                <th>
+                  Actions
+                </th>
+              </tr>
+            </thead>
+
+            <tbody id="donationsTable">
+              <tr>
+                <td colspan="5" class="muted" style="padding: 1rem;">
+                  No pending donations
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div id="configView" style="display: none;">
+          <div class="config-container">
+
+            <div class="config-section">
+              <h3>💰 Statistics</h3>
+              <div class="config-grid">
+                <div class="stat-card">
+                  <div class="stat-label">Total Donations</div>
+                  <div class="stat-value" id="statTotalDonations">0</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-label">Pending</div>
+                  <div class="stat-value" id="statPending">0</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-label">Approved</div>
+                  <div class="stat-value" id="statApproved">0</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-label">Rejected</div>
+                  <div class="stat-value" id="statRejected">0</div>
+                </div>
+                <div class="stat-card">
+                  <div class="stat-label">Total Received</div>
+                  <div class="stat-value" id="statTotalAmount">$0.00</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="config-section">
+              <h3>📍 Your Donation Page</h3>
+              <p class="muted">Share this URL with your viewers so they can send donations.</p>
+              <input id="donationUrl" type="text" readonly class="config-value monospace"
+                style="width: 100%; box-sizing: border-box; margin-bottom: 1rem; text-align: left;" />
+              <button onclick="dashboard.copyToClipboard('donationUrl')">📋 Copy URL</button>
+            </div>
+
+            <div class="config-section">
+              <h3>⚙️ Settings</h3>
+              <div class="config-item">
+                <label>Network:</label>
+                <div class="config-value" id="configNetwork"></div>
+              </div>
+              <div class="config-item" style="flex-direction: column; align-items: stretch;">
+                <label style="margin-bottom: 0.5rem;">Username:</label>
+                <p class="muted" style="font-size: 0.85rem; margin: 0 0 0.5rem 0;">Customize your donation page URL (3-20 characters: letters, numbers, dash, underscore)</p>
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                  <input type="text" id="configUsername" style="flex: 1; min-width: 0;"
+                    placeholder="your-username" maxlength="20" />
+                  <button id="saveUsernameBtn" class="btn-secondary">Save</button>
+                </div>
+              </div>
+              <div class="config-item" style="flex-direction: column; align-items: stretch;">
+                <label style="margin-bottom: 0.5rem;">Pay-to address:</label>
+                <p class="muted" style="font-size: 0.85rem; margin: 0 0 0.5rem 0;">Leave empty to use your account
+                  wallet</p>
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                  <input type="text" id="configPayTo" class="monospace" style="flex: 1; min-width: 0;"
+                    placeholder="Enter Solana wallet address" />
+                  <button id="savePayToBtn" class="btn-secondary">Save</button>
+                </div>
+              </div>
+              <div class="config-item" style="flex-direction: column; align-items: stretch;">
+                <label style="margin-bottom: 0.5rem;">Default donation amount (USDC):</label>
+                <p class="muted" style="font-size: 0.85rem; margin: 0 0 0.5rem 0;">Pre-fills the amount field on your donation page</p>
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                  <input type="number" id="configDefaultAmount" style="flex: 1; min-width: 0;"
+                    placeholder="0.01" step="0.01" min="0.01" max="1000" />
+                  <button id="saveDefaultAmountBtn" class="btn-secondary">Save</button>
+                </div>
+              </div>
+              <div class="config-item">
+                <label>Max name length:</label>
+                <div class="config-value">
+                  <span id="configMaxName"></span> chars
+                </div>
+              </div>
+              <div class="config-item">
+                <label>Max message length:</label>
+                <div class="config-value">
+                  <span id="configMaxMessage"></span> chars
+                </div>
+              </div>
+            </div>
+
+            <div class="config-section">
+              <h3>🗣️ Text-to-Speech</h3>
+              <p class="muted">Configure how donations are read aloud on your overlay.</p>
+
+              <div class="config-item">
+                <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                  <input type="checkbox" id="ttsEnabled" onchange="dashboard.updateTTSValues()">
+                  <span>Enable Text-to-Speech</span>
+                </label>
+              </div>
+
+              <div class="config-item">
+                <label>Voice:</label>
+                <select id="ttsVoice" onchange="dashboard.updateTTSValues()">
+                  <option value="0">Loading voices...</option>
+                </select>
+              </div>
+
+              <div class="config-item">
+                <label>Speech Rate</label>
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                  <span id="ttsRateValue" class="stat-value">1.0</span>
+                  <input type="range" id="ttsRate" min="0.1" max="2" step="0.1" value="1.0"
+                    oninput="dashboard.updateTTSValues()" style="width: 200px;">
+                </div>
+              </div>
+
+              <div class="config-item">
+                <label>Pitch</label>
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                  <span id="ttsPitchValue" class="stat-value">1.0</span>
+                  <input type="range" id="ttsPitch" min="0" max="2" step="0.1" value="1.0"
+                    oninput="dashboard.updateTTSValues()" style="width: 200px;">
+                </div>
+              </div>
+
+              <div class="config-item">
+                <label>Volume</label>
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                  <span id="ttsVolumeValue" class="stat-value">1.0</span>
+                  <input type="range" id="ttsVolume" min="0" max="1" step="0.1" value="1.0"
+                    oninput="dashboard.updateTTSValues()" style="width: 200px;">
+                </div>
+              </div>
+
+              <div class="config-item" style="flex-direction: column; align-items: stretch; gap: 0.75rem;">
+                <label>Test Text:</label>
+                <input type="text" id="ttsTestText" value="Alice sent 5 dollars. Thank you for your support!"
+                  style="width: 100%;">
+                <div style="display: flex; gap: 0.5rem;">
+                  <button onclick="dashboard.testTTS()">🔊 Test TTS</button>
+                  <button onclick="dashboard.stopTTS()">⏹️ Stop</button>
+                </div>
+              </div>
+
+              <div style="display: flex; justify-content: flex-end; margin-top: 1rem;">
+                <button onclick="dashboard.saveTTSSettings()">💾 Save TTS Settings</button>
+              </div>
+            </div>
+
+            <div class="config-section">
+              <h3>💾 Export Data</h3>
+              <p class="muted">Export donation data as a CSV file.</p>
+              <button onclick="dashboard.exportCSV()">Download CSV</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+
+</html>

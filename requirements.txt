@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+sqlalchemy
+python-dotenv
+aiohttp
+base58
+pydantic
+fastapi-x402
+httpx
