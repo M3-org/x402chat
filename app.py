@@ -48,6 +48,7 @@ from sqlalchemy import (
     create_engine,
     TypeDecorator,
     func,
+    text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from cryptography.fernet import Fernet
@@ -475,14 +476,35 @@ class SolanaX402:
 
 # Configure logging
 ENABLE_DEBUG_LOGGING = os.getenv("ENABLE_DEBUG_LOGGING", "false").lower() == "true"
+LOG_FILE = os.getenv("LOG_FILE", "")  # Empty = no file logging
 
 logger = logging.getLogger("superchat")
 if not logger.handlers:
-    logging.basicConfig(
-        level=logging.DEBUG if ENABLE_DEBUG_LOGGING else logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
+    log_level = logging.DEBUG if ENABLE_DEBUG_LOGGING else logging.INFO
+    log_format = logging.Formatter(
+        "%(asctime)s - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+
+    # Console handler (always enabled)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(log_format)
+    logger.addHandler(console_handler)
+    logger.setLevel(log_level)
+
+    # File handler (optional, for persistent logs)
+    if LOG_FILE:
+        from logging.handlers import RotatingFileHandler
+        file_handler = RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=10 * 1024 * 1024,  # 10MB per file
+            backupCount=5,  # Keep 5 backup files
+        )
+        file_handler.setLevel(log_level)
+        file_handler.setFormatter(log_format)
+        logger.addHandler(file_handler)
+        print(f"📝 Logging to file: {LOG_FILE}")
 
 # Silence httpx logging to prevent API key leakage in URLs
 # httpx logs all HTTP requests at INFO level by default
@@ -906,11 +928,40 @@ async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
     # Startup
     init_db()
-    asyncio.create_task(monitor_new_donations())
-    logger.info("server.background_monitor: started")
+    monitor_task = asyncio.create_task(monitor_new_donations())
+    logger.info("server.startup: complete")
+
     yield
-    # Shutdown - cleanup if needed
+
+    # Shutdown - graceful cleanup
     logger.info("server.shutdown: begin")
+
+    # Cancel background monitor task
+    monitor_task.cancel()
+    try:
+        await asyncio.wait_for(monitor_task, timeout=5.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+    logger.info("server.shutdown: background_task_stopped")
+
+    # Close overlay WebSocket connections gracefully
+    for ws in overlay_connections[:]:
+        try:
+            await ws.close(code=1001, reason="Server shutting down")
+        except Exception:
+            pass
+    overlay_connections.clear()
+
+    # Close dashboard WebSocket connections gracefully
+    for receiver_id, connections in list(dashboard_connections.items()):
+        for ws in connections[:]:
+            try:
+                await ws.close(code=1001, reason="Server shutting down")
+            except Exception:
+                pass
+    dashboard_connections.clear()
+
+    logger.info("server.shutdown: complete")
 
 
 app = FastAPI(title="Crypto SuperChat", version="1.0.0", lifespan=lifespan)
@@ -1171,8 +1222,39 @@ async def logo():
 
 @app.get("/health")
 async def health():
-    """Health check."""
-    return {"status": "ok"}
+    """Health check with dependency verification."""
+    checks = {"status": "ok", "checks": {}}
+
+    # Database connectivity check
+    try:
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        checks["checks"]["database"] = "ok"
+    except Exception as e:
+        checks["status"] = "degraded"
+        checks["checks"]["database"] = f"error: {type(e).__name__}"
+        logger.error(f"health.database_check: failed error={e}")
+    finally:
+        db.close()
+
+    # Helius API configuration check
+    if helius_client:
+        checks["checks"]["helius"] = "configured"
+    else:
+        checks["checks"]["helius"] = "not configured"
+
+    # Encryption key check
+    try:
+        # Test encryption round-trip
+        test_msg = "health_check"
+        encrypted = FERNET_CIPHER.encrypt(test_msg.encode())
+        decrypted = FERNET_CIPHER.decrypt(encrypted).decode()
+        checks["checks"]["encryption"] = "ok" if decrypted == test_msg else "mismatch"
+    except Exception as e:
+        checks["status"] = "degraded"
+        checks["checks"]["encryption"] = f"error: {type(e).__name__}"
+
+    return checks
 
 
 class AuthChallengeRequest(BaseModel):
@@ -1776,7 +1858,7 @@ async def export_donations_csv(request: Request, db: Session = Depends(get_db)):
 
     donations = (
         db.query(Donation)
-        .filter(Donation.receiver_id == receiver_id)
+        .filter(Donation.receiver_id == receiver.id)
         .order_by(Donation.created_at.desc())
         .all()
     )
@@ -2460,7 +2542,7 @@ async def monitor_new_donations():
             await asyncio.sleep(2)  # Check every 2 seconds
 
         except Exception as e:
-            logger.info(f"donation.monitor.error: {e}")
+            logger.error(f"donation.monitor.error: {e}", exc_info=True)
             await asyncio.sleep(5)
         finally:
             if db:
