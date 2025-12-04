@@ -1,0 +1,61 @@
+# x402chat systemd service file
+#
+# Quick Setup:
+#   sed -e "s|{{USER}}|$USER|g" -e "s|{{APP_DIR}}|$(pwd)|g" -e "s|{{VENV}}|env|g" x402chat.service | sudo tee /etc/systemd/system/x402chat.service
+#   sudo systemctl daemon-reload && sudo systemctl enable x402chat && sudo systemctl start x402chat
+#
+# Manual Setup:
+#   1. Copy this file: sudo cp x402chat.service /etc/systemd/system/
+#   2. Edit and replace all {{PLACEHOLDERS}}:
+#      - {{USER}}    -> your username (e.g., ubuntu)
+#      - {{APP_DIR}} -> app directory (e.g., /home/ubuntu/x402chat)
+#      - {{VENV}}    -> venv folder name (e.g., env or venv)
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable x402chat
+#   5. sudo systemctl start x402chat
+#
+# Commands:
+#   sudo systemctl status x402chat    # Check status
+#   sudo systemctl restart x402chat   # Restart
+#   journalctl -u x402chat -f         # Live logs
+#   journalctl -u x402chat --since "1 hour ago"  # Recent logs
+
+[Unit]
+Description=x402chat Crypto Superchat
+Documentation=https://github.com/M3-org/x402chat
+After=network.target
+
+[Service]
+Type=simple
+
+# Deploy user and paths (EDIT THESE)
+User={{USER}}
+Group={{USER}}
+WorkingDirectory={{APP_DIR}}
+
+# Python virtual environment path
+Environment="PATH={{APP_DIR}}/{{VENV}}/bin:/usr/local/bin:/usr/bin:/bin"
+
+# Load environment variables from .env file
+EnvironmentFile={{APP_DIR}}/.env
+
+# Start command
+ExecStart={{APP_DIR}}/{{VENV}}/bin/python app.py server
+
+# Auto-restart on failure
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# Logging to journald (use journalctl to view)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=x402chat
+
+# Security hardening (optional but recommended)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
