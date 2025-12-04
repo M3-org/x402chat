@@ -7,3 +7,5 @@ base58
 pydantic
 fastapi-x402
 httpx
+PyNaCl
+cryptography
