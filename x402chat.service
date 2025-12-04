@@ -24,6 +24,8 @@
 Description=x402chat Crypto Superchat
 Documentation=https://github.com/M3-org/x402chat
 After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -45,8 +47,6 @@ ExecStart={{APP_DIR}}/{{VENV}}/bin/python app.py server
 # Auto-restart on failure
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=3
 
 # Logging to journald (use journalctl to view)
 StandardOutput=journal

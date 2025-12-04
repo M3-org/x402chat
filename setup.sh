@@ -175,7 +175,7 @@ if [[ "$OSTYPE" == "linux"* ]]; then
     if [[ "$SETUP_NGINX" =~ ^[Yy]$ ]]; then
         if [ ! -f "$APP_DIR/nginx-x402chat.conf" ]; then
             echo "Error: nginx-x402chat.conf template not found"
-        elif ! command -v nginx &> /dev/null; then
+        elif [ ! -x /usr/sbin/nginx ]; then
             echo "Error: nginx not installed. Install with: sudo apt install nginx"
         else
             read -p "Domain name (e.g., example.com): " DOMAIN_NAME
