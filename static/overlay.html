@@ -177,7 +177,10 @@
     </div>
   </div>
 
-  <script>
+  <script type="module">
+    // Import security utilities
+    import { escapeHtml, escapeAttr } from '/security-utils.js';
+
     class SuperchatOverlay {
       constructor() {
         this.ws = null;
@@ -280,10 +283,9 @@
       }
 
       connect() {
-        const params = new URLSearchParams(window.location.search);
-        const backendHost = params.get("backend") ||
-          window.location.host;
-        const wsUrl = `ws://${backendHost}/ws`;
+        // Always use same-origin WebSocket connection
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
         this.ws = new WebSocket(wsUrl);
 
         this.ws.onopen = () => {
@@ -323,16 +325,23 @@
         const identifier = donation.signature || donation.id;
         superchatEl.dataset.signature = identifier;
 
+        // Generate unique IDs for this donation
+        const timestamp = Date.now();
+        const typedId = `typed-${timestamp}`;
+        const caretId = `caret-${timestamp}`;
+
+        // Escape all user-controlled content to prevent XSS
+        const safeSenderName = escapeHtml(donation.sender_name || "Anon");
+        const safeAmount = parseFloat(donation.amount).toFixed(2);
+        const safeMessage = escapeAttr(donation.message || donation.memo || "");
+
         superchatEl.innerHTML = `
                     <div class="sc-header">
-                        <span class="sc-name">${donation.sender_name || "Anon"
-          }</span>
+                        <span class="sc-name">${safeSenderName}</span>
                         <span class="sc-sent"> sent </span>
-                        <span class="sc-amount">$${parseFloat(donation.amount).toFixed(2)
-          }</span>
+                        <span class="sc-amount">$${safeAmount}</span>
                     </div>
-                    <div class="sc-msg" id="typed-${Date.now()}" data-message="${donation.message || donation.memo || ""
-          }"></div><span class="caret" id="caret-${Date.now()}"></span>
+                    <div class="sc-msg" id="${typedId}" data-message="${safeMessage}"></div><span class="caret" id="${caretId}"></span>
                 `;
 
         // Clear container and add new superchat
@@ -357,11 +366,13 @@
       }
 
       speakDonation(donation) {
-        const senderName = donation.sender_name || "Anonymous";
+        // SAFE: SpeechSynthesis API treats input as plain text
+        // HTML entities are handled correctly (e.g. "&lt;" spoken as "less than")
+        const senderName = escapeHtml(donation.sender_name || "Anonymous");
         const amount = parseFloat(donation.amount).toFixed(2);
-        const message = donation.message || donation.memo || "";
+        const message = escapeHtml(donation.message || donation.memo || "");
 
-        // Construct TTS text
+        // Construct TTS text (plain text only, no HTML)
         const ttsText = `${senderName} sent ${amount} dollars. ${message}`;
 
         console.log("🗣️ Speaking:", ttsText);

@@ -12,6 +12,7 @@ import hashlib
 import logging
 import csv
 import io
+import re
 from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Set, Optional
 from datetime import datetime, timedelta
@@ -978,6 +979,31 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "x-402-payment"],
 )
+
+
+# Security headers middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add security headers to all responses."""
+    response = await call_next(request)
+
+    # CSP in Report-Only mode (gather data without breaking app)
+    response.headers["Content-Security-Policy-Report-Only"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://esm.sh; "  # unsafe-inline needed for onclick
+        "connect-src 'self' wss: ws:; "
+        "img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; "
+        "frame-ancestors 'none'; "
+    )
+
+    # Additional security headers
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+    return response
+
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -2045,6 +2071,10 @@ async def submit_donation(
     Args:
         identifier: Either username or receiver_id (tries username first)
     """
+
+    # Sanitize sender_name as defense-in-depth (server-side validation)
+    # Remove dangerous characters (< > " ' `) but allow emoji/unicode
+    donation_request.sender_name = re.sub(r'[<>"\'`]', '', donation_request.sender_name)[:12]
 
     # Validate identifier exists and get payment address (supports username or receiver_id)
     receiver = get_receiver_by_username_or_id(db, identifier)

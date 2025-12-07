@@ -1,3 +1,6 @@
+// Import security utilities
+import { escapeHtml } from '/security-utils.js';
+
 // Fix secure context issue: redirect 0.0.0.0 to localhost
 if (window.location.hostname === "0.0.0.0") {
   console.log(
@@ -269,7 +272,8 @@ class ModerationDashboard {
   }
 
   connect() {
-    const wsUrl = `ws://${window.location.host}/ws/dashboard`;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/dashboard`;
     this.ws = new WebSocket(wsUrl);
 
     this.ws.onopen = () => {
@@ -460,17 +464,16 @@ class ModerationDashboard {
                         <td>${this.formatTime(
                           donation.timestamp || donation.created_at,
                         )}</td>
-                        <td>${
+                        <td>${escapeHtml(
                           donation.sender_name ||
                           this.truncateAddress(donation.sender) ||
                           "Unknown"
-                        }</td>
+                        )}</td>
                         <td>$${parseFloat(donation.amount).toFixed(2)}</td>
-                        <td>${
+                        <td>${escapeHtml(
                           donation.message ||
-                          donation.memo ||
-                          "<span>No message</span>"
-                        }${donation.status === "playing" ? " <span>📺</span>" : ""}</td>
+                          donation.memo
+                        ) || "<span>No message</span>"}${donation.status === "playing" ? " <span>📺</span>" : ""}</td>
                         <td>
                             ${
                               this.currentTab === "pending"
@@ -1056,6 +1059,7 @@ class ModerationDashboard {
 let dashboard;
 window.addEventListener("DOMContentLoaded", () => {
   dashboard = new ModerationDashboard();
+  window.dashboard = dashboard;  // Explicit global exposure for onclick handlers
 });
 
 function get_unix_time(dateStr) {
