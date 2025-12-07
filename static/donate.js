@@ -257,7 +257,7 @@ function displayPrivacyScore(score) {
   }</li>
           ${
     score.details.protocols && score.details.protocols.length > 0
-      ? `<li>Detected: ${score.details.protocols.join(", ")}</li>`
+      ? `<li>Detected: ${score.details.protocols.map(p => escapeHtml(p)).join(", ")}</li>`
       : "<li>No known protocols detected</li>"
   }
           <li>DEX swaps: ${score.details.swap_count || 0}</li>

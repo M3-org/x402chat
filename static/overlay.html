@@ -283,9 +283,19 @@
       }
 
       connect() {
-        // Always use same-origin WebSocket connection
+        const params = new URLSearchParams(window.location.search);
+        const rid = params.get("rid");
+        const token = params.get("t");
+
+        if (!rid || !token) {
+          console.error("❌ Overlay requires authentication (rid/token missing)");
+          document.body.innerHTML = '<div style="color:white;padding:2rem;text-align:center;">Error: Overlay authentication missing. Please use the URL from your dashboard.</div>';
+          return;
+        }
+
+        // Use protocol-relative WebSocket with authentication
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws`;
+        const wsUrl = `${protocol}//${window.location.host}/ws?rid=${encodeURIComponent(rid)}&t=${encodeURIComponent(token)}`;
         this.ws = new WebSocket(wsUrl);
 
         this.ws.onopen = () => {
@@ -304,8 +314,12 @@
         };
 
         this.ws.onclose = () => {
-          console.log("❌ Overlay disconnected");
+          console.log("❌ Overlay disconnected, reconnecting...");
           setTimeout(() => this.connect(), 3000);
+        };
+
+        this.ws.onerror = (error) => {
+          console.error("❌ WebSocket error:", error);
         };
       }
 

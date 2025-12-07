@@ -701,6 +701,91 @@ FACILITATOR_URL = os.getenv("FACILITATOR_URL", "https://facilitator.x402.rs")
 PAY_TO_ADDRESS = os.getenv("PAY_TO_ADDRESS")
 PORT = int(os.getenv("PORT", "8765"))
 
+# WebSocket overlay authentication secret
+WS_OVERLAY_SECRET = os.getenv("WS_OVERLAY_SECRET", secrets.token_urlsafe(32))
+
+# RPC method allowlist for /api/helius/rpc
+ALLOWED_RPC_METHODS = {
+    "getLatestBlockhash",
+    "getSignatureStatuses",
+    "getAccountInfo",
+    "getTokenAccountBalance",
+    "getTransaction",
+}
+
+
+def sign_overlay_token(receiver_id: str, ttl_seconds=3600):
+    """Generate HMAC-signed token for overlay authentication.
+
+    Args:
+        receiver_id: Receiver ID to encode in token
+        ttl_seconds: Token validity period (default 1 hour)
+
+    Returns:
+        Signed token string: "{receiver_id}.{timestamp}.{mac_base64}"
+    """
+    timestamp = int(time.time())
+    message = f"{receiver_id}.{timestamp}".encode()
+    mac = hmac.new(WS_OVERLAY_SECRET.encode(), message, hashlib.sha256).digest()
+    token = base64.b64encode(mac).decode()
+    return f"{receiver_id}.{timestamp}.{token}"
+
+
+def verify_overlay_token(token: str, max_age=3600):
+    """Verify overlay token and return receiver_id if valid.
+
+    Args:
+        token: Token string to verify
+        max_age: Maximum age in seconds (default 1 hour)
+
+    Returns:
+        receiver_id if valid, None if invalid/expired
+    """
+    try:
+        receiver_id, timestamp, mac_b64 = token.split(".")
+        ts = int(timestamp)
+
+        # Check expiry
+        if abs(time.time() - ts) > max_age:
+            return None
+
+        # Verify HMAC
+        message = f"{receiver_id}.{timestamp}".encode()
+        expected_mac = hmac.new(WS_OVERLAY_SECRET.encode(), message, hashlib.sha256).digest()
+        actual_mac = base64.b64decode(mac_b64.encode())
+
+        if not hmac.compare_digest(expected_mac, actual_mac):
+            return None
+
+        return receiver_id
+    except Exception:
+        return None
+
+
+def validate_websocket_origin(websocket: WebSocket) -> bool:
+    """Verify WebSocket Origin matches Host (CSRF protection).
+
+    Args:
+        websocket: WebSocket connection to validate
+
+    Returns:
+        True if origin is allowed, False otherwise
+    """
+    origin = websocket.headers.get("origin")
+    host = websocket.headers.get("host")
+
+    if not origin:
+        # Allow connections without Origin header (some clients don't send it)
+        return True
+
+    # Extract hostname from origin URL
+    from urllib.parse import urlparse
+    origin_host = urlparse(origin).netloc
+
+    # Allow same-origin and localhost
+    allowed = {host, "localhost:8765", "127.0.0.1:8765"}
+    return origin_host in allowed
+
 
 def debug_ctx(context: str, **fields):
     """
@@ -1019,8 +1104,8 @@ helius_client = HeliusClient(api_key=HELIUS_API_KEY) if HELIUS_API_KEY else None
 privacy_scorer = WalletPrivacyScorer(helius_api_key=HELIUS_API_KEY)
 
 # WebSocket connections
-# Overlay remains public (for OBS)
-overlay_connections: List[WebSocket] = []
+# Overlay connections scoped by receiver_id for multi-tenant isolation
+overlay_connections: Dict[str, List[WebSocket]] = {}  # receiver_id -> [ws1, ws2, ...]
 
 # Dashboard connections by receiver_id for multi-user support
 # Format: {receiver_id: [websocket1, websocket2, ...]}
@@ -1570,7 +1655,9 @@ async def get_config(request: Request, db: Session = Depends(get_db)):
         or 0
     )
 
-    # Generate overlay URL with user's TTS settings
+    # Generate overlay URL with authentication token and TTS settings
+    overlay_token = sign_overlay_token(receiver.id)
+
     tts_params = []
     if not receiver.tts_enabled:
         tts_params.append("tts=false")
@@ -1583,9 +1670,9 @@ async def get_config(request: Request, db: Session = Depends(get_db)):
     if receiver.tts_volume != 1.0:
         tts_params.append(f"volume={receiver.tts_volume}")
 
-    overlay_url = f"{request.base_url}overlay"
+    overlay_url = f"{request.base_url}overlay?rid={receiver.id}&t={overlay_token}"
     if tts_params:
-        overlay_url += "?" + "&".join(tts_params)
+        overlay_url += "&" + "&".join(tts_params)
 
     return {
         "x402_settings": {
@@ -1816,11 +1903,22 @@ async def update_default_donation_amount(
 
 
 @app.get("/api/events/playing")
-async def get_currently_playing():
-    """Get currently playing donation."""
+async def get_currently_playing(request: Request, db: Session = Depends(get_db)):
+    """Get currently playing donation (requires authentication)."""
+    # Require authentication
+    receiver = get_current_user(request, db)
+
+    if not currently_playing:
+        return {"playing": None, "donation": None}
+
+    # Verify donation belongs to this receiver
+    donation_data = currently_playing["donation_data"]
+    if donation_data.get("receiver_id") != receiver.id:
+        return {"playing": None, "donation": None}
+
     return {
-        "playing": currently_playing["donation_id"] if currently_playing else None,
-        "donation": currently_playing["donation_data"] if currently_playing else None,
+        "playing": currently_playing["donation_id"],
+        "donation": donation_data,
     }
 
 
@@ -1952,7 +2050,7 @@ async def play_donation(
 
     # Hide any currently playing donation
     if currently_playing:
-        await broadcast_hide_donation(currently_playing["donation_id"])
+        await broadcast_hide_donation(currently_playing["donation_id"], receiver.id)
 
     # Set as currently playing (in-memory only) - use id
     identifier = str(donation.id)
@@ -1994,7 +2092,7 @@ async def approve_donation(
 
     # Hide from overlay - use id (signature no longer stored)
     identifier = str(donation.id)
-    await broadcast_hide_donation(identifier)
+    await broadcast_hide_donation(identifier, receiver.id)
 
     # Clear playing state
     currently_playing = None
@@ -2021,7 +2119,7 @@ async def reject_donation(
     # If this donation is currently playing, stop it
     if currently_playing and currently_playing["donation_id"] == moderation_request.donation_id:
         # Hide from overlay
-        await broadcast_hide_donation(moderation_request.donation_id)
+        await broadcast_hide_donation(moderation_request.donation_id, receiver.id)
         # Clear playing state
         currently_playing = None
 
@@ -2377,7 +2475,7 @@ async def helius_rpc_proxy(request: Request):
     Proxy for Helius RPC calls to keep API key server-side.
     Compatible with Solana web3.js Connection class.
 
-    Security: Required for transaction broadcasting and blockchain queries.
+    Security: Method allowlist prevents API abuse.
     This endpoint is necessary for the donation flow.
 
     Request body: JSON-RPC request object (single or batch)
@@ -2388,6 +2486,18 @@ async def helius_rpc_proxy(request: Request):
 
     try:
         body = await request.json()
+
+        # Validate RPC methods against allowlist
+        requests_list = body if isinstance(body, list) else [body]
+        methods = {req.get("method") for req in requests_list if isinstance(req, dict)}
+
+        if not methods.issubset(ALLOWED_RPC_METHODS):
+            disallowed = methods - ALLOWED_RPC_METHODS
+            raise HTTPException(
+                status_code=400,
+                detail=f"RPC methods not allowed: {list(disallowed)}. Allowed: {list(ALLOWED_RPC_METHODS)}"
+            )
+
         return await helius_client.rpc_call(body)
 
     except HTTPException:
@@ -2401,10 +2511,29 @@ async def helius_rpc_proxy(request: Request):
 # WebSocket endpoints
 @app.websocket("/ws")
 async def overlay_websocket(websocket: WebSocket):
-    """WebSocket for overlay - receives approved donations."""
+    """WebSocket for overlay - authenticated per-receiver connections."""
+
+    # Validate Origin header (CSRF protection)
+    if not validate_websocket_origin(websocket):
+        await websocket.close(code=1008, reason="Origin not allowed")
+        logger.warning("ws.overlay.reject: bad_origin")
+        return
+
+    # Extract and validate authentication
+    rid = websocket.query_params.get("rid")
+    token = websocket.query_params.get("t")
+
+    verified_rid = verify_overlay_token(token) if token else None
+    if not verified_rid or verified_rid != rid:
+        await websocket.close(code=1008, reason="Authentication required")
+        logger.warning(f"ws.overlay.auth_failed: rid={rid}")
+        return
+
     await websocket.accept()
-    overlay_connections.append(websocket)
-    logger.info(f"ws.overlay.connect: total={len(overlay_connections)}")
+    logger.info(f"ws.overlay.connected: receiver_id={verified_rid}")
+
+    # Add to receiver-specific connection pool
+    overlay_connections.setdefault(verified_rid, []).append(websocket)
 
     try:
         await websocket.send_json({"type": "connected"})
@@ -2416,8 +2545,10 @@ async def overlay_websocket(websocket: WebSocket):
                 await websocket.send_json({"type": "pong"})
 
     except WebSocketDisconnect:
-        overlay_connections.remove(websocket)
-        logger.info(f"ws.overlay.disconnect: remaining={len(overlay_connections)}")
+        overlay_connections[verified_rid].remove(websocket)
+        if not overlay_connections[verified_rid]:
+            del overlay_connections[verified_rid]
+        logger.info(f"ws.overlay.disconnected: receiver_id={verified_rid}")
 
 
 @app.websocket("/ws/dashboard")
@@ -2425,6 +2556,12 @@ async def dashboard_websocket(websocket: WebSocket, db: Session = Depends(get_db
     """WebSocket for dashboard - receives new pending donations (authenticated)."""
     receiver_id = None
     try:
+        # Validate Origin header (CSRF protection)
+        if not validate_websocket_origin(websocket):
+            await websocket.close(code=1008, reason="Origin not allowed")
+            logger.warning("ws.dashboard.reject: bad_origin")
+            return
+
         # Authenticate before accepting connection
         receiver_id = await verify_websocket_auth(websocket, db)
 
@@ -2527,15 +2664,57 @@ async def broadcast_new_donation(donation_data: dict, receiver_id: str):
 
 
 async def broadcast_approved_donation(donation_data: dict):
-    """Broadcast approved donation to overlay."""
+    """Broadcast approved donation to specific receiver's overlays only."""
+    receiver_id = donation_data.get("receiver_id")
+    if not receiver_id:
+        logger.warning("broadcast.skip: no receiver_id in donation_data")
+        return
+
+    connections = overlay_connections.get(receiver_id, [])
+    if not connections:
+        logger.info(f"broadcast.skip: receiver_id={receiver_id} no_connections")
+        return
+
     message = {"type": "donation", "data": donation_data}
-    await broadcast_to_connections(overlay_connections, message, "overlays")
+
+    disconnected = []
+    for ws in connections:
+        try:
+            await ws.send_json(message)
+        except Exception as e:
+            logger.info(f"ws.broadcast.error: error={e}")
+            disconnected.append(ws)
+
+    # Cleanup disconnected clients
+    for ws in disconnected:
+        connections.remove(ws)
+
+    logger.info(f"ws.broadcast.sent: receiver_id={receiver_id} count={len(connections)}")
 
 
-async def broadcast_hide_donation(signature: str):
-    """Broadcast hide donation to overlay."""
+async def broadcast_hide_donation(signature: str, receiver_id: str = None):
+    """Broadcast hide donation to specific receiver's overlays only."""
+    if not receiver_id:
+        logger.warning("broadcast.hide.skip: no receiver_id provided")
+        return
+
+    connections = overlay_connections.get(receiver_id, [])
+    if not connections:
+        return
+
     message = {"type": "hide_donation", "signature": signature}
-    await broadcast_to_connections(overlay_connections, message, "overlays")
+
+    disconnected = []
+    for ws in connections:
+        try:
+            await ws.send_json(message)
+        except Exception as e:
+            logger.info(f"ws.broadcast.error: error={e}")
+            disconnected.append(ws)
+
+    # Cleanup
+    for ws in disconnected:
+        connections.remove(ws)
 
 
 # Background monitoring for new donations
