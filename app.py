@@ -722,35 +722,34 @@ def sign_overlay_token(receiver_id: str, ttl_seconds=3600):
         ttl_seconds: Token validity period (default 1 hour)
 
     Returns:
-        Signed token string: "{receiver_id}.{timestamp}.{mac_base64}"
+        Signed token string: "{receiver_id}.{timestamp}.{nonce}.{mac_base64}"
     """
     timestamp = int(time.time())
-    message = f"{receiver_id}.{timestamp}".encode()
+    nonce = secrets.token_urlsafe(8)
+    message = f"{receiver_id}.{timestamp}.{nonce}".encode()
     mac = hmac.new(WS_OVERLAY_SECRET.encode(), message, hashlib.sha256).digest()
     token = base64.b64encode(mac).decode()
-    return f"{receiver_id}.{timestamp}.{token}"
+    return f"{receiver_id}.{timestamp}.{nonce}.{token}"
 
 
 def verify_overlay_token(token: str, max_age=3600):
     """Verify overlay token and return receiver_id if valid.
 
     Args:
-        token: Token string to verify
+        token: Token string to verify (format: receiver_id.timestamp.nonce.mac)
         max_age: Maximum age in seconds (default 1 hour)
 
     Returns:
         receiver_id if valid, None if invalid/expired
     """
     try:
-        receiver_id, timestamp, mac_b64 = token.split(".")
+        receiver_id, timestamp, nonce, mac_b64 = token.split(".")
         ts = int(timestamp)
 
-        # Check expiry
         if abs(time.time() - ts) > max_age:
             return None
 
-        # Verify HMAC
-        message = f"{receiver_id}.{timestamp}".encode()
+        message = f"{receiver_id}.{timestamp}.{nonce}".encode()
         expected_mac = hmac.new(WS_OVERLAY_SECRET.encode(), message, hashlib.sha256).digest()
         actual_mac = base64.b64decode(mac_b64.encode())
 
@@ -775,14 +774,11 @@ def validate_websocket_origin(websocket: WebSocket) -> bool:
     host = websocket.headers.get("host")
 
     if not origin:
-        # Allow connections without Origin header (some clients don't send it)
         return True
 
-    # Extract hostname from origin URL
     from urllib.parse import urlparse
     origin_host = urlparse(origin).netloc
 
-    # Allow same-origin and localhost
     allowed = {host, "localhost:8765", "127.0.0.1:8765"}
     return origin_host in allowed
 
@@ -1072,17 +1068,14 @@ async def add_security_headers(request: Request, call_next):
     """Add security headers to all responses."""
     response = await call_next(request)
 
-    # CSP in Report-Only mode (gather data without breaking app)
     response.headers["Content-Security-Policy-Report-Only"] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://esm.sh; "  # unsafe-inline needed for onclick
+        "script-src 'self' 'unsafe-inline' https://esm.sh; "
         "connect-src 'self' wss: ws:; "
         "img-src 'self' data:; "
         "style-src 'self' 'unsafe-inline'; "
         "frame-ancestors 'none'; "
     )
-
-    # Additional security headers
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -1494,7 +1487,7 @@ def verify_wallet_auth(
         # Auto-register wallet on first sign-in
         import secrets
 
-        receiver_id = secrets.token_urlsafe(8)
+        receiver_id = secrets.token_urlsafe(16)
         receiver = ReceiverId(public_key=auth.publicKey, id=receiver_id)
         db.add(receiver)
         db.commit()
@@ -1541,7 +1534,7 @@ async def auth_verify(req: AuthVerifyRequest, db: Session = Depends(get_db)):
         rid = None
 
         if receiver is None:
-            rid = secrets.token_urlsafe(10)
+            rid = secrets.token_urlsafe(16)
             item = ReceiverId(public_key=req.publicKey, id=rid)
             db.add(item)
         else:
@@ -1655,7 +1648,6 @@ async def get_config(request: Request, db: Session = Depends(get_db)):
         or 0
     )
 
-    # Generate overlay URL with authentication token and TTS settings
     overlay_token = sign_overlay_token(receiver.id)
 
     tts_params = []
@@ -1904,14 +1896,12 @@ async def update_default_donation_amount(
 
 @app.get("/api/events/playing")
 async def get_currently_playing(request: Request, db: Session = Depends(get_db)):
-    """Get currently playing donation (requires authentication)."""
-    # Require authentication
+    """Get currently playing donation."""
     receiver = get_current_user(request, db)
 
     if not currently_playing:
         return {"playing": None, "donation": None}
 
-    # Verify donation belongs to this receiver
     donation_data = currently_playing["donation_data"]
     if donation_data.get("receiver_id") != receiver.id:
         return {"playing": None, "donation": None}
@@ -2170,8 +2160,7 @@ async def submit_donation(
         identifier: Either username or receiver_id (tries username first)
     """
 
-    # Sanitize sender_name as defense-in-depth (server-side validation)
-    # Remove dangerous characters (< > " ' `) but allow emoji/unicode
+    # Sanitize sender_name (remove HTML-dangerous characters)
     donation_request.sender_name = re.sub(r'[<>"\'`]', '', donation_request.sender_name)[:12]
 
     # Validate identifier exists and get payment address (supports username or receiver_id)
@@ -2513,13 +2502,11 @@ async def helius_rpc_proxy(request: Request):
 async def overlay_websocket(websocket: WebSocket):
     """WebSocket for overlay - authenticated per-receiver connections."""
 
-    # Validate Origin header (CSRF protection)
     if not validate_websocket_origin(websocket):
         await websocket.close(code=1008, reason="Origin not allowed")
         logger.warning("ws.overlay.reject: bad_origin")
         return
 
-    # Extract and validate authentication
     rid = websocket.query_params.get("rid")
     token = websocket.query_params.get("t")
 
@@ -2532,7 +2519,6 @@ async def overlay_websocket(websocket: WebSocket):
     await websocket.accept()
     logger.info(f"ws.overlay.connected: receiver_id={verified_rid}")
 
-    # Add to receiver-specific connection pool
     overlay_connections.setdefault(verified_rid, []).append(websocket)
 
     try:
@@ -2556,16 +2542,13 @@ async def dashboard_websocket(websocket: WebSocket, db: Session = Depends(get_db
     """WebSocket for dashboard - receives new pending donations (authenticated)."""
     receiver_id = None
     try:
-        # Validate Origin header (CSRF protection)
         if not validate_websocket_origin(websocket):
             await websocket.close(code=1008, reason="Origin not allowed")
             logger.warning("ws.dashboard.reject: bad_origin")
             return
 
-        # Authenticate before accepting connection
         receiver_id = await verify_websocket_auth(websocket, db)
 
-        # Accept connection after authentication succeeds
         await websocket.accept()
 
         # Add to receiver's connection list
@@ -2685,7 +2668,6 @@ async def broadcast_approved_donation(donation_data: dict):
             logger.info(f"ws.broadcast.error: error={e}")
             disconnected.append(ws)
 
-    # Cleanup disconnected clients
     for ws in disconnected:
         connections.remove(ws)
 
@@ -2712,7 +2694,6 @@ async def broadcast_hide_donation(signature: str, receiver_id: str = None):
             logger.info(f"ws.broadcast.error: error={e}")
             disconnected.append(ws)
 
-    # Cleanup
     for ws in disconnected:
         connections.remove(ws)
 
