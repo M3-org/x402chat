@@ -709,6 +709,7 @@ ALLOWED_RPC_METHODS = {
     "getAccountInfo",
     "getTokenAccountBalance",
     "getTransaction",
+    "sendTransaction",  # Required for broadcasting signed donation transactions
 }
 
 
