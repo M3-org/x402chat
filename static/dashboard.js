@@ -694,6 +694,9 @@ class ModerationDashboard {
     }
   }
 
+  /* DEAD CODE - No UI elements exist for sync functionality (no syncBtn or syncStatus elements)
+   * Candidate for deletion after testing period
+   *
   async loadSyncStatus() {
     try {
       const response = await fetch("/api/sync/status");
@@ -769,8 +772,50 @@ class ModerationDashboard {
       }, 3000);
     }
   }
+  */
 
   async exportCSV() {
+    this.showCSVWarningModal();
+  }
+
+  showCSVWarningModal() {
+    const modal = document.getElementById('csvWarningModal');
+    const checkbox = document.getElementById('csvWarningCheckbox');
+    const confirmBtn = document.getElementById('csvWarningConfirm');
+    const cancelBtn = document.getElementById('csvWarningCancel');
+
+    checkbox.checked = false;
+    confirmBtn.disabled = true;
+
+    const handleCheckboxChange = () => {
+      confirmBtn.disabled = !checkbox.checked;
+    };
+
+    const handleCancel = () => {
+      modal.style.display = 'none';
+      cleanup();
+    };
+
+    const handleConfirm = async () => {
+      modal.style.display = 'none';
+      cleanup();
+      await this.performCSVExport();
+    };
+
+    const cleanup = () => {
+      checkbox.removeEventListener('change', handleCheckboxChange);
+      cancelBtn.removeEventListener('click', handleCancel);
+      confirmBtn.removeEventListener('click', handleConfirm);
+    };
+
+    checkbox.addEventListener('change', handleCheckboxChange);
+    cancelBtn.addEventListener('click', handleCancel);
+    confirmBtn.addEventListener('click', handleConfirm);
+
+    modal.style.display = 'flex';
+  }
+
+  async performCSVExport() {
     try {
       const response = await fetch("/api/export/csv");
       if (!response.ok) {

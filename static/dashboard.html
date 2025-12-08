@@ -256,6 +256,29 @@
       </div>
     </main>
   </div>
+
+  <div id="csvWarningModal" class="modal" style="display: none;">
+    <div class="modal-content warning-modal">
+      <h2>⚠️ CSV Export Privacy Warning</h2>
+      <p>This CSV file contains <strong>sensitive donor information</strong>:</p>
+      <ul>
+        <li><strong>Donation messages</strong> - private messages from your supporters</li>
+        <li><strong>Sender names</strong> - may contain identifying information</li>
+        <li><strong>Donation amounts and timestamps</strong> - could enable pattern analysis</li>
+      </ul>
+      <p class="warning-text"><strong>Important:</strong> Keep this file secure. Do not share it publicly or with untrusted parties. Treat your supporters' data with care.</p>
+
+      <label class="checkbox-label">
+        <input type="checkbox" id="csvWarningCheckbox">
+        I understand the privacy implications and will keep this file secure
+      </label>
+
+      <div class="modal-buttons">
+        <button id="csvWarningCancel" class="secondary-button">Cancel</button>
+        <button id="csvWarningConfirm" class="primary-button" disabled>Download CSV</button>
+      </div>
+    </div>
+  </div>
 </body>
 
 </html>

@@ -13,13 +13,15 @@ import logging
 import csv
 import io
 import re
+import traceback
 from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Set, Optional
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 # Third-party imports
-import aiohttp
 import base58
+import hmac
 import httpx
 import nacl.exceptions
 import nacl.signing
@@ -36,9 +38,12 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import (
     Column,
     String,
@@ -148,8 +153,6 @@ class SolanaX402:
 
     async def verify_payment(self, payment_header: str) -> dict:
         """Verify x402 payment with facilitator.x402.rs"""
-        import time
-
         try:
             logger.info(f"🔍 Verifying payment with: {self.facilitator_url}/verify")
 
@@ -180,8 +183,6 @@ class SolanaX402:
 
             # Decode transaction to count instructions
             try:
-                import base64
-
                 tx_bytes = base64.b64decode(tx_b64)
                 logger.info(f"   - Transaction size: {len(tx_bytes)} bytes")
             except Exception as decode_err:
@@ -231,8 +232,6 @@ class SolanaX402:
         except Exception as e:
             logger.error(f"❌ Facilitator exception: {e}")
             logger.error(f"   - Exception type: {type(e).__name__}")
-            import traceback
-
             logger.error(f"   - Traceback: {traceback.format_exc()[:500]}")
             return {"valid": False, "error": str(e)}
 
@@ -248,7 +247,6 @@ class SolanaX402:
         This replaces facilitator verification with direct on-chain verification.
         Eliminates timing issues with blockhash staleness.
         """
-        import time
         from solders.signature import Signature  # type: ignore
 
         try:
@@ -776,7 +774,6 @@ def validate_websocket_origin(websocket: WebSocket) -> bool:
     if not origin:
         return True
 
-    from urllib.parse import urlparse
     origin_host = urlparse(origin).netloc
 
     allowed = {host, "localhost:8765", "127.0.0.1:8765"}
@@ -912,6 +909,19 @@ class Donation(Base):
         }
 
 
+class UsedSignature(Base):
+    """Track used transaction signatures to prevent replay attacks.
+
+    Persists across server restarts. Auto-cleaned after 48 hours.
+    """
+
+    __tablename__ = "used_signatures"
+
+    signature = Column(String, primary_key=True)
+    used_at = Column(DateTime, default=datetime.utcnow, index=True)
+    receiver_id = Column(String, nullable=False, index=True)
+
+
 # Database setup
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///donations.db")
 engine = create_engine(DATABASE_URL, echo=False)
@@ -995,8 +1005,6 @@ def verify_donation_ownership(donation: Donation, receiver_id: str) -> None:
 
 # Constants
 # AI16Z_MINT = "HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC"  # Future: multi-token X402 support
-HELIUS_BASE = "https://api.helius.xyz/v0"
-RPC_BASE = "https://mainnet.helius-rpc.com"
 # MEMO_PID = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"  # Legacy: memo parsing
 
 
@@ -1011,6 +1019,7 @@ async def lifespan(app: FastAPI):
     # Startup
     init_db()
     monitor_task = asyncio.create_task(monitor_new_donations())
+    cleanup_task = asyncio.create_task(cleanup_old_signatures())
     logger.info("server.startup: complete")
 
     yield
@@ -1018,13 +1027,15 @@ async def lifespan(app: FastAPI):
     # Shutdown - graceful cleanup
     logger.info("server.shutdown: begin")
 
-    # Cancel background monitor task
+    # Cancel background tasks
     monitor_task.cancel()
+    cleanup_task.cancel()
     try:
         await asyncio.wait_for(monitor_task, timeout=5.0)
+        await asyncio.wait_for(cleanup_task, timeout=5.0)
     except (asyncio.CancelledError, asyncio.TimeoutError):
         pass
-    logger.info("server.shutdown: background_task_stopped")
+    logger.info("server.shutdown: background_tasks_stopped")
 
     # Close overlay WebSocket connections gracefully
     for ws in overlay_connections[:]:
@@ -1047,6 +1058,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Crypto SuperChat", version="1.0.0", lifespan=lifespan)
+
+# Rate limiting
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS - restricted for security
 app.add_middleware(
@@ -1184,12 +1200,6 @@ class TTSSettingsRequest(BaseModel):
 # In-memory playing state (fast, ephemeral)
 currently_playing = None  # {signature: str, donation_data: dict}
 
-# Replay attack prevention: Track recently used transaction signatures
-# In-memory only (not persisted) for privacy - expires after 24 hours
-# Key: signature, Value: timestamp when used
-used_signatures: dict[str, float] = {}
-SIGNATURE_EXPIRY_HOURS = 24
-
 
 def get_current_user(request: Request, db: Session):
     session_id = request.cookies.get("session_id")
@@ -1267,7 +1277,6 @@ async def serve_donate_page(identifier: str, db: Session = Depends(get_db)):
 
     # Redirect to username URL if user has username and we're on receiver_id URL
     # This ensures consistent URLs and better UX
-    from fastapi.responses import RedirectResponse
     if receiver.username and identifier == receiver.id:
         return RedirectResponse(url=f"/donate/{receiver.username}", status_code=301)
 
@@ -1277,8 +1286,6 @@ async def serve_donate_page(identifier: str, db: Session = Depends(get_db)):
 
     # Replace the default title with the identifier
     html = html.replace("<h1 id=\"pageTitle\">x402 Chat</h1>", f"<h1 id=\"pageTitle\">@{identifier}</h1>")
-
-    from fastapi.responses import HTMLResponse
     return HTMLResponse(content=html)
 
 
@@ -1398,7 +1405,8 @@ load_whitelist()
 
 
 @app.post("/api/auth/challenge")
-async def auth_challenge(req: AuthChallengeRequest):
+@limiter.limit("10/minute")
+async def auth_challenge(request: Request, req: AuthChallengeRequest):
     # Note: Whitelist check disabled for beta - anyone can authenticate
     # Whitelist is still loaded and can be checked via API or file inspection
     # found = False
@@ -1485,8 +1493,6 @@ def verify_wallet_auth(
     is_new = False
     if receiver is None:
         # Auto-register wallet on first sign-in
-        import secrets
-
         receiver_id = secrets.token_urlsafe(16)
         receiver = ReceiverId(public_key=auth.publicKey, id=receiver_id)
         db.add(receiver)
@@ -1964,7 +1970,28 @@ async def get_rejected_donations(request: Request, db: Session = Depends(get_db)
     return [d.to_dict() for d in donations]
 
 
+def csv_safe(value: str | None) -> str:
+    """Sanitize cell value to prevent CSV formula injection (OWASP).
+
+    Neutralizes values starting with = + - @ (after whitespace) and control
+    characters. Use with csv.writer for proper CSV formatting.
+    """
+    s = "" if value is None else str(value)
+    if not s:
+        return ""
+
+    stripped = s.lstrip()
+    if stripped and stripped[0] in ("=", "+", "-", "@"):
+        return "'" + s
+
+    if s[0] < " ":
+        return "'" + s
+
+    return s
+
+
 @app.get("/api/export/csv")
+@limiter.limit("3/hour")
 async def export_donations_csv(request: Request, db: Session = Depends(get_db)):
     """Export all donations to CSV format."""
     # Require authentication
@@ -2001,10 +2028,10 @@ async def export_donations_csv(request: Request, db: Session = Depends(get_db)):
             [
                 donation.id,
                 donation.created_at.isoformat() if donation.created_at else "",
-                donation.sender_name or "",
+                csv_safe(donation.sender_name or ""),
                 donation.amount,
                 donation.token_symbol or "",
-                donation.message or "",
+                csv_safe(donation.message or ""),
                 donation.status,
                 donation.moderated_at.isoformat() if donation.moderated_at else "",
             ]
@@ -2148,7 +2175,9 @@ async def restore_donation(
 
 # x402 Donation API
 @app.post("/api/donate/{identifier}")
+@limiter.limit("5/minute")
 async def submit_donation(
+    request: Request,
     identifier: str,
     donation_request: DonationRequest,
     db: Session = Depends(get_db),
@@ -2265,25 +2294,18 @@ async def submit_donation(
         raise HTTPException(status_code=402, detail="No transaction signature provided")
 
     # Replay attack prevention: Check if signature already used
-    import time as time_module
+    current_time = time.time()
 
-    current_time = time_module.time()
+    # Check if this signature was already used (database check)
+    existing_sig = db.query(UsedSignature).filter(
+        UsedSignature.signature == transaction_signature
+    ).first()
 
-    # Clean up expired signatures
-    expired = [
-        sig
-        for sig, timestamp in used_signatures.items()
-        if current_time - timestamp > (SIGNATURE_EXPIRY_HOURS * 3600)
-    ]
-    for sig in expired:
-        del used_signatures[sig]
-
-    # Check if this signature was already used
-    if transaction_signature in used_signatures:
-        used_at = used_signatures[transaction_signature]
-        age_minutes = int((current_time - used_at) / 60)
+    if existing_sig:
+        age_seconds = (datetime.utcnow() - existing_sig.used_at).total_seconds()
+        age_minutes = int(age_seconds / 60)
         logger.error(
-            f"x402.replay_check: result=used_signature age_minutes={age_minutes}"
+            f"x402.replay_check: result=used_signature age_minutes={age_minutes} receiver_id={existing_sig.receiver_id}"
         )
         debug_ctx("x402.replay_check.ctx", signature=transaction_signature)
         raise HTTPException(
@@ -2304,8 +2326,6 @@ async def submit_donation(
     # expected_recipient is already set from receiver.get_payment_address() above
 
     # Start timing verification
-    import time
-
     verify_start = time.time()
 
     # NEW: Verify transaction directly on Solana blockchain
@@ -2390,9 +2410,14 @@ async def submit_donation(
     # Broadcast to dashboard for moderation (only to this receiver's dashboards)
     await broadcast_new_donation(donation.to_dict(), receiver.id)
 
-    # Mark signature as used (replay attack prevention)
-    used_signatures[transaction_signature] = current_time
-    logger.info("x402.replay_protect: signature_recorded=true")
+    # Mark signature as used in database (replay attack prevention)
+    used_sig = UsedSignature(
+        signature=transaction_signature,
+        receiver_id=receiver.id,
+    )
+    db.add(used_sig)
+    db.commit()
+    logger.info(f"x402.replay_protect: signature_recorded_db=true receiver_id={receiver.id}")
     debug_ctx("x402.replay_protect.ctx", signature=transaction_signature)
 
     logger.info(
@@ -2413,6 +2438,7 @@ async def submit_donation(
 
 
 @app.post("/api/wallet-privacy-score")
+@limiter.limit("5/minute")
 async def score_wallet_privacy(request: Request):
     """
     Analyze wallet and return privacy score (0-100)
@@ -2459,6 +2485,7 @@ async def score_wallet_privacy(request: Request):
 
 
 @app.post("/api/helius/rpc")
+@limiter.limit("30/minute")
 async def helius_rpc_proxy(request: Request):
     """
     Proxy for Helius RPC calls to keep API key server-side.
@@ -2739,6 +2766,32 @@ async def monitor_new_donations():
                 db.close()
 
 
+async def cleanup_old_signatures():
+    """Remove signature records older than 48 hours.
+
+    Runs every hour to prevent unbounded database growth.
+    """
+    while True:
+        try:
+            await asyncio.sleep(3600)
+
+            db = SessionLocal()
+            try:
+                cutoff = datetime.utcnow() - timedelta(hours=48)
+                deleted = db.query(UsedSignature).filter(
+                    UsedSignature.used_at < cutoff
+                ).delete()
+                db.commit()
+
+                if deleted > 0:
+                    logger.info(f"cleanup.signatures: removed={deleted} older_than=48h")
+            finally:
+                db.close()
+
+        except Exception as e:
+            logger.error(f"cleanup.signatures.error: {e}", exc_info=True)
+
+
 # ============================================================================
 # CLI COMMANDS & EXPORT FUNCTIONS
 # ============================================================================
@@ -2809,10 +2862,10 @@ def export_donations_csv_cli():
                     [
                         donation.id,
                         donation.created_at.isoformat() if donation.created_at else "",
-                        donation.sender_name or "",
+                        csv_safe(donation.sender_name or ""),
                         donation.amount,
                         donation.token_symbol or "",
-                        donation.message or "",
+                        csv_safe(donation.message or ""),
                         donation.status,
                         (
                             donation.moderated_at.isoformat()
