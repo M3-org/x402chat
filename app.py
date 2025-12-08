@@ -1090,7 +1090,7 @@ async def add_security_headers(request: Request, call_next):
         "connect-src 'self' wss: ws:; "
         "img-src 'self' data:; "
         "style-src 'self' 'unsafe-inline'; "
-        "frame-ancestors 'none'; "
+        "frame-ancestors 'none'"
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
