@@ -106,6 +106,11 @@ fi
 echo "Initializing database..."
 python app.py init
 
+# Fix static file permissions (git doesn't preserve read permissions)
+echo "Setting static file permissions..."
+chmod 644 static/*.js static/*.css static/*.html 2>/dev/null || true
+echo "Static files readable ✓"
+
 # Ask about systemd setup (Linux only)
 echo ""
 if [[ "$OSTYPE" == "linux"* ]]; then

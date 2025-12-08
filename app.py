@@ -1606,17 +1606,22 @@ async def auth_id(request: Request, db: Session = Depends(get_db)):
 
 
 @app.get("/api/auth/clear")
-async def auth_clear(request: Request, db: Session = Depends(get_db)):
+async def auth_clear(request: Request, response: Response, db: Session = Depends(get_db)):
     session_id = request.cookies.get("session_id")
     found = db.get(AuthSession, session_id)
 
-    if found is None:
-        return {"ok": True}
+    if found:
+        db.delete(found)
+        db.commit()
 
-    db.delete(found)
-    db.commit()
+    response.delete_cookie(
+        key="session_id",
+        httponly=True,
+        secure=True,
+        samesite="lax"
+    )
 
-    # session_id = request.cookies.delete("session_id")
+    return RedirectResponse(url="/", status_code=303)
 
 
 @app.get("/api/config")
