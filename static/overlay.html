@@ -395,7 +395,7 @@
 
       playNotificationSound() {
         try {
-          const audio = new Audio("/static/notification.mp3");
+          const audio = new Audio("/notification.mp3");
           audio.volume = 0.5; // 50% volume
           audio.play().catch((e) => {
             console.log("Audio play failed:", e);

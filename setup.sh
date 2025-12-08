@@ -170,6 +170,36 @@ if [[ "$OSTYPE" == "linux"* ]]; then
         echo "  sudo systemctl restart x402chat    # Restart"
         echo "  sudo systemctl stop x402chat       # Stop"
         echo "  journalctl -u x402chat -f          # Live logs"
+
+        # Verify routes after service starts
+        if [[ "$START_NOW" =~ ^[Yy]$ ]]; then
+            echo ""
+            echo "Verifying static file routes..."
+            sleep 1
+
+            ROUTES=("/" "/index.css" "/index.js" "/dashboard" "/dashboard.css" "/dashboard.js"
+                   "/donate.css" "/donate.js" "/security-utils.js" "/wallet-auth.js"
+                   "/privacy-scorer.js" "/notification.mp3" "/global.css" "/overlay" "/favicon.svg")
+
+            ALL_OK=true
+            for route in "${ROUTES[@]}"; do
+                STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8765$route 2>/dev/null || echo "000")
+                if [ "$STATUS" = "200" ]; then
+                    echo "  ✅ $route"
+                else
+                    echo "  ❌ $route - HTTP $STATUS"
+                    ALL_OK=false
+                fi
+            done
+
+            if [ "$ALL_OK" = true ]; then
+                echo ""
+                echo "✅ All routes verified successfully!"
+            else
+                echo ""
+                echo "⚠️  Some routes failed. Check the logs: journalctl -u x402chat -n 50"
+            fi
+        fi
     fi
 
     # Ask about nginx setup

@@ -1227,32 +1227,32 @@ def get_current_user(request: Request, db: Session):
 
 
 @app.get("/")
-async def root():
+async def serve_index():
     return FileResponse("static/index.html")
 
 
 @app.get("/index.css")
-async def root():
-    return FileResponse("static/index.css")
+async def serve_index_css():
+    return FileResponse("static/index.css", media_type="text/css")
 
 
 @app.get("/index.js")
-async def root():
-    return FileResponse("static/index.js")
+async def serve_index_js():
+    return FileResponse("static/index.js", media_type="application/javascript")
 
 
 @app.get("/overlay")
-async def root():
+async def serve_overlay():
     return FileResponse("static/overlay.html")
 
 
 @app.get("/global.css")
-async def dashboard():
-    return FileResponse("static/global.css")
+async def serve_global_css():
+    return FileResponse("static/global.css", media_type="text/css")
 
 
 @app.get("/dashboard")
-async def dashboard():
+async def serve_dashboard():
     """
     Serve dashboard HTML.
     Auth is now handled client-side via wallet signatures (no cookies needed).
@@ -1261,13 +1261,13 @@ async def dashboard():
 
 
 @app.get("/dashboard.css")
-async def dashboard():
-    return FileResponse("static/dashboard.css")
+async def serve_dashboard_css():
+    return FileResponse("static/dashboard.css", media_type="text/css")
 
 
 @app.get("/dashboard.js")
-async def dashboard():
-    return FileResponse("static/dashboard.js")
+async def serve_dashboard_js():
+    return FileResponse("static/dashboard.js", media_type="application/javascript")
 
 
 @app.get("/donate/{identifier}")
@@ -1302,13 +1302,13 @@ async def get_receiver_info(identifier: str, db: Session = Depends(get_db)):
 
 
 @app.get("/donate.css")
-async def donate():
-    return FileResponse("static/donate.css")
+async def serve_donate_css():
+    return FileResponse("static/donate.css", media_type="text/css")
 
 
 @app.get("/donate.js")
-async def donate():
-    return FileResponse("static/donate.js")
+async def serve_donate_js():
+    return FileResponse("static/donate.js", media_type="application/javascript")
 
 
 @app.get("/privacy-scorer.js")
@@ -1319,6 +1319,16 @@ async def serve_privacy_scorer_js():
 @app.get("/wallet-auth.js")
 async def wallet_auth():
     return FileResponse("static/wallet-auth.js", media_type="application/javascript")
+
+
+@app.get("/security-utils.js")
+async def serve_security_utils():
+    return FileResponse("static/security-utils.js", media_type="application/javascript")
+
+
+@app.get("/notification.mp3")
+async def serve_notification_sound():
+    return FileResponse("static/notification.mp3", media_type="audio/mpeg")
 
 
 @app.get("/favicon.svg")
