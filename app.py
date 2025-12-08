@@ -1504,15 +1504,19 @@ def verify_wallet_auth(
     if receiver is None:
         # Auto-register wallet on first sign-in
         receiver_id = secrets.token_urlsafe(16)
-        receiver = ReceiverId(public_key=auth.publicKey, id=receiver_id)
+        receiver = ReceiverId(
+            public_key=auth.publicKey,
+            id=receiver_id,
+            pay_to_address=auth.publicKey  # Default: donations go to sign-in wallet
+        )
         db.add(receiver)
         db.commit()
         is_new = True
         logger.info(f"auth.wallet.register: receiver_id={receiver_id} new_user=true")
         debug_ctx("auth.wallet.register.ctx", public_key=auth.publicKey)
 
-    # Check if user needs to configure payment address
-    needs_config = receiver.pay_to_address is None or receiver.pay_to_address == ""
+    # Config is optional now - users can always access it in dashboard
+    needs_config = False
 
     return receiver.id, needs_config
 
