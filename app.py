@@ -901,6 +901,7 @@ class Donation(Base):
             "message": self.message,  # Auto-decrypted by TypeDecorator
             "amount": self.amount,
             "token_symbol": self.token_symbol,
+            "receiver_id": self.receiver_id,  # Required for overlay broadcasting
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "status": self.status,
             "moderated_at": (
