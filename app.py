@@ -825,6 +825,9 @@ class ReceiverId(Base):
     tts_pitch = Column(Float, default=1.0, nullable=False)
     tts_volume = Column(Float, default=1.0, nullable=False)
 
+    # Overlay API Key (persistent, user can regenerate)
+    overlay_api_key = Column(String, nullable=True)  # Auto-generated on first use
+
     def to_dict(self):
         return {
             "public_key": self.public_key,
@@ -1675,7 +1678,10 @@ async def get_config(request: Request, db: Session = Depends(get_db)):
         or 0
     )
 
-    overlay_token = sign_overlay_token(receiver.id)
+    # Generate persistent overlay API key if not exists
+    if not receiver.overlay_api_key:
+        receiver.overlay_api_key = secrets.token_urlsafe(32)
+        db.commit()
 
     tts_params = []
     if not receiver.tts_enabled:
@@ -1689,7 +1695,7 @@ async def get_config(request: Request, db: Session = Depends(get_db)):
     if receiver.tts_volume != 1.0:
         tts_params.append(f"volume={receiver.tts_volume}")
 
-    overlay_url = f"{request.base_url}overlay?rid={receiver.id}&t={overlay_token}"
+    overlay_url = f"{request.base_url}overlay?rid={receiver.id}&key={receiver.overlay_api_key}"
     if tts_params:
         overlay_url += "&" + "&".join(tts_params)
 
@@ -1918,6 +1924,43 @@ async def update_default_donation_amount(
     return {
         "success": True,
         "default_donation_amount": receiver.default_donation_amount,
+    }
+
+
+@app.post("/api/config/regenerate-overlay-key")
+async def regenerate_overlay_key(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Regenerate overlay API key for the authenticated user."""
+    receiver = get_current_user(request, db)
+
+    # Generate new persistent key
+    receiver.overlay_api_key = secrets.token_urlsafe(32)
+    db.commit()
+
+    logger.info(f"config.overlay_key.regenerated: receiver_id={receiver.id}")
+
+    # Return new overlay URL
+    tts_params = []
+    if not receiver.tts_enabled:
+        tts_params.append("tts=false")
+    if receiver.tts_voice_index != 0:
+        tts_params.append(f"voice={receiver.tts_voice_index}")
+    if receiver.tts_rate != 1.0:
+        tts_params.append(f"rate={receiver.tts_rate}")
+    if receiver.tts_pitch != 1.0:
+        tts_params.append(f"pitch={receiver.tts_pitch}")
+    if receiver.tts_volume != 1.0:
+        tts_params.append(f"volume={receiver.tts_volume}")
+
+    overlay_url = f"{request.base_url}overlay?rid={receiver.id}&key={receiver.overlay_api_key}"
+    if tts_params:
+        overlay_url += "&" + "&".join(tts_params)
+
+    return {
+        "success": True,
+        "overlay_url": overlay_url,
     }
 
 
@@ -2556,10 +2599,28 @@ async def overlay_websocket(websocket: WebSocket):
         return
 
     rid = websocket.query_params.get("rid")
-    token = websocket.query_params.get("t")
+    token = websocket.query_params.get("t")  # Legacy time-based token
+    api_key = websocket.query_params.get("key")  # New persistent API key
 
-    verified_rid = verify_overlay_token(token) if token else None
-    if not verified_rid or verified_rid != rid:
+    # Try new persistent key first, then fall back to legacy token
+    verified_rid = None
+
+    if api_key and rid:
+        # Verify persistent API key against database
+        db = SessionLocal()
+        try:
+            receiver = db.get(ReceiverId, {"id": rid}) or db.query(ReceiverId).filter_by(id=rid).first()
+            if receiver and receiver.overlay_api_key and hmac.compare_digest(receiver.overlay_api_key, api_key):
+                verified_rid = receiver.id
+        finally:
+            db.close()
+    elif token:
+        # Fall back to legacy time-based token (for backwards compatibility)
+        verified_rid = verify_overlay_token(token)
+        if verified_rid and verified_rid != rid:
+            verified_rid = None
+
+    if not verified_rid:
         await websocket.close(code=1008, reason="Authentication required")
         logger.warning(f"ws.overlay.auth_failed: rid={rid}")
         return
