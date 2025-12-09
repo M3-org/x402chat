@@ -419,7 +419,7 @@
       hideDonation(signature) {
         console.log("🗑️ Hiding donation:", signature);
         const superchatEl = this.container.querySelector(
-          `[data-signature="${signature}"]`,
+          `[data-signature="${CSS.escape(signature)}"]`,
         );
         if (superchatEl) {
           superchatEl.classList.add("hide");

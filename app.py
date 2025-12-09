@@ -16,7 +16,7 @@ import re
 import traceback
 from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Set, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from urllib.parse import urlparse
 
 # Third-party imports
@@ -50,6 +50,7 @@ from sqlalchemy import (
     Float,
     Integer,
     DateTime,
+    Date,
     Boolean,
     create_engine,
     TypeDecorator,
@@ -723,10 +724,16 @@ def validate_websocket_origin(websocket: WebSocket) -> bool:
     host = websocket.headers.get("host")
 
     if not origin:
-        return True
+        # Require origin header for security
+        return False
 
     origin_host = urlparse(origin).netloc
 
+    # In production, only allow exact host match
+    if os.getenv("ENVIRONMENT") == "production":
+        return origin_host == host
+
+    # In development, allow localhost
     allowed = {host, "localhost:8765", "127.0.0.1:8765"}
     return origin_host in allowed
 
@@ -840,8 +847,8 @@ class Donation(Base):
     # Multi-user support: which receiver this donation is for
     receiver_id = Column(String, nullable=True)  # NULL for legacy donations
 
-    # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow)
+    # Timestamps (date-only for privacy - prevents correlation with blockchain timing)
+    created_at = Column(Date, default=date.today)
 
     # Moderation fields
     status = Column(String, default="pending")  # pending, approved, rejected
@@ -978,6 +985,7 @@ async def lifespan(app: FastAPI):
     init_db()
     monitor_task = asyncio.create_task(monitor_new_donations())
     cleanup_task = asyncio.create_task(cleanup_old_signatures())
+    challenge_cleanup_task = asyncio.create_task(cleanup_old_challenges())
     logger.info("server.startup: complete")
 
     yield
@@ -988,9 +996,11 @@ async def lifespan(app: FastAPI):
     # Cancel background tasks
     monitor_task.cancel()
     cleanup_task.cancel()
+    challenge_cleanup_task.cancel()
     try:
         await asyncio.wait_for(monitor_task, timeout=5.0)
         await asyncio.wait_for(cleanup_task, timeout=5.0)
+        await asyncio.wait_for(challenge_cleanup_task, timeout=5.0)
     except (asyncio.CancelledError, asyncio.TimeoutError):
         pass
     logger.info("server.shutdown: background_tasks_stopped")
@@ -1022,14 +1032,26 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# CORS - restricted for security
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+# CORS - environment-based origins for security
+cors_origins = []
+if os.getenv("ENVIRONMENT") == "production":
+    # Production: Only allow configured production origin
+    production_origin = os.getenv("PRODUCTION_ORIGIN")
+    if production_origin:
+        cors_origins = [production_origin]
+    else:
+        logger.warning("⚠️  PRODUCTION_ORIGIN not set, CORS disabled")
+else:
+    # Development: Allow localhost origins
+    cors_origins = [
         "http://localhost:8080",
         "http://localhost:3000",
         "http://127.0.0.1:8080",
-    ],
+    ]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "x-402-payment"],
@@ -1042,9 +1064,9 @@ async def add_security_headers(request: Request, call_next):
     """Add security headers to all responses."""
     response = await call_next(request)
 
-    response.headers["Content-Security-Policy-Report-Only"] = (
+    response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://esm.sh; "
+        "script-src 'self' https://esm.sh; "
         "connect-src 'self' wss: ws:; "
         "img-src 'self' data:; "
         "style-src 'self' 'unsafe-inline'; "
@@ -1530,7 +1552,7 @@ async def auth_verify(req: AuthVerifyRequest, db: Session = Depends(get_db)):
             httponly=True,  # JS cannot read it (prevents XSS stealing)
             secure=True,  # only send over HTTPS
             samesite="Lax",  # protects CSRF
-            max_age=3600,
+            max_age=604800,  # 7 days (matches server-side validation)
         )
 
         return res
@@ -1567,7 +1589,7 @@ async def wallet_verify(auth: WalletAuth, db: Session = Depends(get_db)):
         httponly=True,
         secure=True,
         samesite="Lax",
-        max_age=3600,
+        max_age=604800,  # 7 days (matches server-side validation)
     )
 
     return res
@@ -2830,6 +2852,29 @@ async def cleanup_old_signatures():
 
         except Exception as e:
             logger.error(f"cleanup.signatures.error: {e}", exc_info=True)
+
+
+async def cleanup_old_challenges():
+    """Remove challenge tokens older than 5 minutes.
+
+    Runs every 5 minutes to prevent unbounded memory growth from abandoned auth attempts.
+    """
+    while True:
+        try:
+            await asyncio.sleep(300)  # 5 minutes
+
+            cutoff = time.time() - 300  # 5 minute TTL
+            removed = 0
+            for key in list(challenges.keys()):
+                if challenges[key]["timestamp"] < cutoff:
+                    del challenges[key]
+                    removed += 1
+
+            if removed > 0:
+                logger.info(f"cleanup.challenges: removed={removed} older_than=5m")
+
+        except Exception as e:
+            logger.error(f"cleanup.challenges.error: {e}", exc_info=True)
 
 
 # ============================================================================
