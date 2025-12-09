@@ -285,17 +285,17 @@
       connect() {
         const params = new URLSearchParams(window.location.search);
         const rid = params.get("rid");
-        const token = params.get("t");
+        const key = params.get("key");
 
-        if (!rid || !token) {
-          console.error("❌ Overlay requires authentication (rid/token missing)");
+        if (!rid || !key) {
+          console.error("❌ Overlay requires authentication (rid/key missing)");
           document.body.innerHTML = '<div style="color:white;padding:2rem;text-align:center;">Error: Overlay authentication missing. Please use the URL from your dashboard.</div>';
           return;
         }
 
-        // Use protocol-relative WebSocket with authentication
+        // Use protocol-relative WebSocket with persistent API key
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws?rid=${encodeURIComponent(rid)}&t=${encodeURIComponent(token)}`;
+        const wsUrl = `${protocol}//${window.location.host}/ws?rid=${encodeURIComponent(rid)}&key=${encodeURIComponent(key)}`;
         this.ws = new WebSocket(wsUrl);
 
         this.ws.onopen = () => {

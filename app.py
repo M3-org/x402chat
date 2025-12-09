@@ -699,9 +699,6 @@ FACILITATOR_URL = os.getenv("FACILITATOR_URL", "https://facilitator.x402.rs")
 PAY_TO_ADDRESS = os.getenv("PAY_TO_ADDRESS")
 PORT = int(os.getenv("PORT", "8765"))
 
-# WebSocket overlay authentication secret
-WS_OVERLAY_SECRET = os.getenv("WS_OVERLAY_SECRET", secrets.token_urlsafe(32))
-
 # RPC method allowlist for /api/helius/rpc
 ALLOWED_RPC_METHODS = {
     "getLatestBlockhash",
@@ -711,53 +708,6 @@ ALLOWED_RPC_METHODS = {
     "getTransaction",
     "sendTransaction",  # Required for broadcasting signed donation transactions
 }
-
-
-def sign_overlay_token(receiver_id: str, ttl_seconds=3600):
-    """Generate HMAC-signed token for overlay authentication.
-
-    Args:
-        receiver_id: Receiver ID to encode in token
-        ttl_seconds: Token validity period (default 1 hour)
-
-    Returns:
-        Signed token string: "{receiver_id}.{timestamp}.{nonce}.{mac_base64}"
-    """
-    timestamp = int(time.time())
-    nonce = secrets.token_urlsafe(8)
-    message = f"{receiver_id}.{timestamp}.{nonce}".encode()
-    mac = hmac.new(WS_OVERLAY_SECRET.encode(), message, hashlib.sha256).digest()
-    token = base64.b64encode(mac).decode()
-    return f"{receiver_id}.{timestamp}.{nonce}.{token}"
-
-
-def verify_overlay_token(token: str, max_age=3600):
-    """Verify overlay token and return receiver_id if valid.
-
-    Args:
-        token: Token string to verify (format: receiver_id.timestamp.nonce.mac)
-        max_age: Maximum age in seconds (default 1 hour)
-
-    Returns:
-        receiver_id if valid, None if invalid/expired
-    """
-    try:
-        receiver_id, timestamp, nonce, mac_b64 = token.split(".")
-        ts = int(timestamp)
-
-        if abs(time.time() - ts) > max_age:
-            return None
-
-        message = f"{receiver_id}.{timestamp}.{nonce}".encode()
-        expected_mac = hmac.new(WS_OVERLAY_SECRET.encode(), message, hashlib.sha256).digest()
-        actual_mac = base64.b64decode(mac_b64.encode())
-
-        if not hmac.compare_digest(expected_mac, actual_mac):
-            return None
-
-        return receiver_id
-    except Exception:
-        return None
 
 
 def validate_websocket_origin(websocket: WebSocket) -> bool:
@@ -2599,30 +2549,26 @@ async def overlay_websocket(websocket: WebSocket):
         return
 
     rid = websocket.query_params.get("rid")
-    token = websocket.query_params.get("t")  # Legacy time-based token
-    api_key = websocket.query_params.get("key")  # New persistent API key
+    api_key = websocket.query_params.get("key")
 
-    # Try new persistent key first, then fall back to legacy token
+    if not rid or not api_key:
+        await websocket.close(code=1008, reason="Authentication required")
+        logger.warning(f"ws.overlay.auth_failed: missing_params rid={rid}")
+        return
+
+    # Verify persistent API key against database
+    db = SessionLocal()
     verified_rid = None
-
-    if api_key and rid:
-        # Verify persistent API key against database
-        db = SessionLocal()
-        try:
-            receiver = db.get(ReceiverId, {"id": rid}) or db.query(ReceiverId).filter_by(id=rid).first()
-            if receiver and receiver.overlay_api_key and hmac.compare_digest(receiver.overlay_api_key, api_key):
-                verified_rid = receiver.id
-        finally:
-            db.close()
-    elif token:
-        # Fall back to legacy time-based token (for backwards compatibility)
-        verified_rid = verify_overlay_token(token)
-        if verified_rid and verified_rid != rid:
-            verified_rid = None
+    try:
+        receiver = db.get(ReceiverId, {"id": rid}) or db.query(ReceiverId).filter_by(id=rid).first()
+        if receiver and receiver.overlay_api_key and hmac.compare_digest(receiver.overlay_api_key, api_key):
+            verified_rid = receiver.id
+    finally:
+        db.close()
 
     if not verified_rid:
-        await websocket.close(code=1008, reason="Authentication required")
-        logger.warning(f"ws.overlay.auth_failed: rid={rid}")
+        await websocket.close(code=1008, reason="Invalid API key")
+        logger.warning(f"ws.overlay.auth_failed: invalid_key rid={rid}")
         return
 
     await websocket.accept()
