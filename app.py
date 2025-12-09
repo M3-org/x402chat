@@ -2560,7 +2560,7 @@ async def overlay_websocket(websocket: WebSocket):
     db = SessionLocal()
     verified_rid = None
     try:
-        receiver = db.get(ReceiverId, {"id": rid}) or db.query(ReceiverId).filter_by(id=rid).first()
+        receiver = db.query(ReceiverId).filter_by(id=rid).first()
         if receiver and receiver.overlay_api_key and hmac.compare_digest(receiver.overlay_api_key, api_key):
             verified_rid = receiver.id
     finally:
