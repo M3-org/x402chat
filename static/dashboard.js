@@ -1081,9 +1081,38 @@ class ModerationDashboard {
     }
   }
 
+  showObsModal() {
+    // Populate the overlay URL in the modal
+    const urlInput = document.getElementById("obsOverlayUrl");
+    if (urlInput && this.overlayUrl) {
+      urlInput.value = this.overlayUrl;
+    }
+
+    // Show the modal
+    const modal = document.getElementById("obsSetupModal");
+    if (modal) {
+      modal.style.display = "flex";
+    }
+  }
+
+  closeObsModal() {
+    const modal = document.getElementById("obsSetupModal");
+    if (modal) {
+      modal.style.display = "none";
+    }
+  }
+
+  copyOverlayUrl() {
+    const urlInput = document.getElementById("obsOverlayUrl");
+    if (urlInput) {
+      urlInput.select();
+      document.execCommand("copy");
+      alert("✅ Overlay URL copied to clipboard!");
+    }
+  }
+
   openOverlayWindow() {
     // Open overlay in a popup window sized for OBS
-    // Common OBS canvas sizes: 1920x1080 (Full HD), but overlay typically smaller
     const width = 800;
     const height = 600;
     const left = (screen.width - width) / 2;
