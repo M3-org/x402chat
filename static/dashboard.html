@@ -198,6 +198,13 @@
               </div>
 
               <div class="config-item">
+                <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                  <input type="checkbox" id="notificationSoundEnabled">
+                  <span>Enable Notification Sound (Ding)</span>
+                </label>
+              </div>
+
+              <div class="config-item">
                 <label>Voice:</label>
                 <select id="ttsVoice" onchange="dashboard.updateTTSValues()">
                   <option value="0">Loading voices...</option>

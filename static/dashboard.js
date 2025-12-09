@@ -234,6 +234,7 @@ class ModerationDashboard {
         rate: parseFloat(document.getElementById("ttsRate").value),
         pitch: parseFloat(document.getElementById("ttsPitch").value),
         volume: parseFloat(document.getElementById("ttsVolume").value),
+        notification_sound_enabled: document.getElementById("notificationSoundEnabled").checked,
       };
 
       console.log("💾 Saving TTS settings:", settings);
@@ -944,6 +945,8 @@ class ModerationDashboard {
         document.getElementById("ttsRate").value = config.tts_settings.rate;
         document.getElementById("ttsPitch").value = config.tts_settings.pitch;
         document.getElementById("ttsVolume").value = config.tts_settings.volume;
+        document.getElementById("notificationSoundEnabled").checked =
+          config.tts_settings.notification_sound_enabled ?? true;
 
         // Update displayed values
         this.updateTTSValues();

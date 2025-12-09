@@ -775,6 +775,9 @@ class ReceiverId(Base):
     tts_pitch = Column(Float, default=1.0, nullable=False)
     tts_volume = Column(Float, default=1.0, nullable=False)
 
+    # Notification Settings
+    notification_sound_enabled = Column(Boolean, default=True, nullable=False)
+
     # Overlay API Key (persistent, user can regenerate)
     overlay_api_key = Column(String, nullable=True)  # Auto-generated on first use
 
@@ -1139,6 +1142,7 @@ class TTSSettingsRequest(BaseModel):
     rate: float = 1.0
     pitch: float = 1.0
     volume: float = 1.0
+    notification_sound_enabled: bool = True
 
     class Config:
         json_schema_extra = {
@@ -1148,6 +1152,7 @@ class TTSSettingsRequest(BaseModel):
                 "rate": 1.0,
                 "pitch": 1.0,
                 "volume": 1.0,
+                "notification_sound_enabled": True,
             }
         }
 
@@ -1644,6 +1649,8 @@ async def get_config(request: Request, db: Session = Depends(get_db)):
         tts_params.append(f"pitch={receiver.tts_pitch}")
     if receiver.tts_volume != 1.0:
         tts_params.append(f"volume={receiver.tts_volume}")
+    if not receiver.notification_sound_enabled:
+        tts_params.append("sound=false")
 
     overlay_url = f"{request.base_url}overlay?rid={receiver.id}&key={receiver.overlay_api_key}"
     if tts_params:
@@ -1680,6 +1687,7 @@ async def get_config(request: Request, db: Session = Depends(get_db)):
             "rate": receiver.tts_rate,
             "pitch": receiver.tts_pitch,
             "volume": receiver.tts_volume,
+            "notification_sound_enabled": receiver.notification_sound_enabled,
         },
         "user": {
             "receiver_id": receiver.id,
@@ -1720,6 +1728,7 @@ async def update_tts_settings(
     receiver.tts_rate = tts_request.rate
     receiver.tts_pitch = tts_request.pitch
     receiver.tts_volume = tts_request.volume
+    receiver.notification_sound_enabled = tts_request.notification_sound_enabled
 
     db.commit()
 
@@ -1734,6 +1743,7 @@ async def update_tts_settings(
             "rate": receiver.tts_rate,
             "pitch": receiver.tts_pitch,
             "volume": receiver.tts_volume,
+            "notification_sound_enabled": receiver.notification_sound_enabled,
         },
     }
 
@@ -1903,6 +1913,8 @@ async def regenerate_overlay_key(
         tts_params.append(f"pitch={receiver.tts_pitch}")
     if receiver.tts_volume != 1.0:
         tts_params.append(f"volume={receiver.tts_volume}")
+    if not receiver.notification_sound_enabled:
+        tts_params.append("sound=false")
 
     overlay_url = f"{request.base_url}overlay?rid={receiver.id}&key={receiver.overlay_api_key}"
     if tts_params:

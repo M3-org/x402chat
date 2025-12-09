@@ -239,12 +239,17 @@
         this.ttsVolume = parseFloat(params.get('volume') ||
                                     localStorage.getItem('ttsVolume') || '1');
 
+        // Notification sound enabled (default: true)
+        this.notificationSoundEnabled = params.get('sound') !== 'false' &&
+                                        localStorage.getItem('notificationSound') !== 'false';
+
         console.log("🔧 TTS settings:", {
           enabled: this.ttsEnabled,
           voiceIndex: this.ttsVoiceIndex,
           rate: this.ttsRate,
           pitch: this.ttsPitch,
-          volume: this.ttsVolume
+          volume: this.ttsVolume,
+          notificationSound: this.notificationSoundEnabled
         });
       }
 
@@ -394,6 +399,11 @@
       }
 
       playNotificationSound() {
+        if (!this.notificationSoundEnabled) {
+          console.log("🔇 Notification sound disabled");
+          return;
+        }
+
         try {
           const audio = new Audio("/notification.mp3");
           audio.volume = 0.5; // 50% volume
