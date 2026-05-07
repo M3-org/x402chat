@@ -1006,11 +1006,12 @@ async def lifespan(app: FastAPI):
     logger.info("server.shutdown: background_tasks_stopped")
 
     # Close overlay WebSocket connections gracefully
-    for ws in overlay_connections[:]:
-        try:
-            await ws.close(code=1001, reason="Server shutting down")
-        except Exception:
-            pass
+    for receiver_id, connections in list(overlay_connections.items()):
+        for ws in connections[:]:
+            try:
+                await ws.close(code=1001, reason="Server shutting down")
+            except Exception:
+                pass
     overlay_connections.clear()
 
     # Close dashboard WebSocket connections gracefully
