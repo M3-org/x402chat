@@ -68,3 +68,6 @@ node_modules/
 
 # Whitelist file
 whitelist.txt
+
+# Local workspace (audit reports, skill outputs, scratch docs)
+tmp/
