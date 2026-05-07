@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Set, Optional
 from datetime import datetime, timedelta, date
 from urllib.parse import urlparse
+from html import escape as html_escape
 
 # Third-party imports
 import base58
@@ -511,6 +512,19 @@ if not logger.handlers:
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+def _redact_url(url: str) -> str:
+    """Strip query string from a URL for safe logging.
+
+    Helius URLs carry `?api-key=<SECRET>` in the query; logging the raw URL
+    leaks the key (CodeQL py/clear-text-logging-sensitive-data).
+    """
+    try:
+        parsed = urlparse(url)
+        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    except Exception:
+        return "<url-redaction-failed>"
+
+
 # ============================================================================
 # HELIUS API CLIENT (DRY)
 # ============================================================================
@@ -557,13 +571,15 @@ class HeliusClient:
                 response = await client.request(method, url, **kwargs)
                 return response
             except httpx.TimeoutException:
-                logger.error(f"helius.timeout: url={url}")
+                logger.error("helius.timeout")
                 raise HTTPException(
                     status_code=504,
                     detail="helius api request timed out"
                 )
             except httpx.RequestError as e:
-                logger.error(f"helius.request_error: error={str(e)[:200]}")
+                logger.error(
+                    f"helius.request_error: type={type(e).__name__}"
+                )
                 raise HTTPException(
                     status_code=502,
                     detail="helius api request failed"
@@ -1265,11 +1281,16 @@ async def serve_donate_page(identifier: str, db: Session = Depends(get_db)):
 
     # Read HTML and inject identifier to prevent flash
     with open("static/donate.html", "r") as f:
-        html = f.read()
+        html_content = f.read()
 
-    # Replace the default title with the identifier
-    html = html.replace("<h1 id=\"pageTitle\">x402 Chat</h1>", f"<h1 id=\"pageTitle\">@{identifier}</h1>")
-    return HTMLResponse(content=html)
+    # Replace the default title with the identifier; html-escape against
+    # reflected XSS via the path parameter (CodeQL py/reflective-xss).
+    safe_identifier = html_escape(identifier)
+    html_content = html_content.replace(
+        "<h1 id=\"pageTitle\">x402 Chat</h1>",
+        f"<h1 id=\"pageTitle\">@{safe_identifier}</h1>",
+    )
+    return HTMLResponse(content=html_content)
 
 
 @app.get("/api/receiver/{identifier}")
