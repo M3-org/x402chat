@@ -1,12 +1,17 @@
-fastapi
-uvicorn
-sqlalchemy
-python-dotenv
-aiohttp
-base58
-pydantic
-fastapi-x402
-httpx
-PyNaCl
-cryptography
-slowapi
+# Critical (wallet auth + crypto): tight pins, audit before bumping
+cryptography>=47.0,<48.0
+PyNaCl>=1.6,<2.0
+fastapi-x402>=0.1.8,<0.2
+
+# High (network + framework): floor at locked, ceiling at next minor or two
+fastapi>=0.136,<0.140
+uvicorn>=0.46,<0.50
+aiohttp>=3.13,<3.15
+httpx>=0.28,<0.30
+pydantic>=2.13,<2.15
+sqlalchemy>=2.0,<2.1
+slowapi>=0.1.9,<0.2
+
+# Standard
+base58>=2.1,<2.2
+python-dotenv>=1.2,<2.0
