@@ -571,14 +571,14 @@ class HeliusClient:
                 response = await client.request(method, url, **kwargs)
                 return response
             except httpx.TimeoutException:
-                logger.error(f"helius.timeout: url={_redact_url(url)}")
+                logger.error("helius.timeout")
                 raise HTTPException(
                     status_code=504,
                     detail="helius api request timed out"
                 )
             except httpx.RequestError as e:
                 logger.error(
-                    f"helius.request_error: type={type(e).__name__} url={_redact_url(url)}"
+                    f"helius.request_error: type={type(e).__name__}"
                 )
                 raise HTTPException(
                     status_code=502,
