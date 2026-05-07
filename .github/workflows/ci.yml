@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      # Hardened install: --only-binary=:all: refuses sdist installs that would
+      # run setup.py at install time. Equivalent to pnpm 11's "allow-builds"
+      # gating model. All x402chat direct deps publish wheels for Linux x86_64.
+      - name: Install dependencies (wheels only, no setup.py execution)
+        run: "uv pip install --system --only-binary=:all: -r requirements.txt"
+
+      - name: Smoke import
+        run: python -c "import app"
+
+      - name: Smoke boot (start server, hit /health, stop)
+        run: |
+          python app.py server &
+          SERVER_PID=$!
+          # Poll /health up to 15s; no hardcoded sleeps
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8765/health > /dev/null 2>&1; then
+              echo "Server is up"
+              kill $SERVER_PID 2>/dev/null || true
+              wait $SERVER_PID 2>/dev/null || true
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "Server failed to come up within 15s"
+          kill $SERVER_PID 2>/dev/null || true
+          exit 1
+
+      - name: Security audit (advisory)
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt || echo "::warning::pip-audit found issues; tracked in #3"
