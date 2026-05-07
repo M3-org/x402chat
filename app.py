@@ -964,6 +964,16 @@ def verify_donation_ownership(donation: Donation, receiver_id: str) -> None:
         )
 
 
+def validate_solana_address(addr: str) -> bool:
+    """Return True if `addr` is a valid Solana public key (base58, 32 bytes)."""
+    try:
+        from solders.pubkey import Pubkey  # type: ignore
+        Pubkey.from_string(addr)
+        return True
+    except Exception:
+        return False
+
+
 # ============================================================================
 # CLI DONATION FETCHER
 # ============================================================================
@@ -1043,11 +1053,10 @@ if os.getenv("ENVIRONMENT") == "production":
     else:
         logger.warning("⚠️  PRODUCTION_ORIGIN not set, CORS disabled")
 else:
-    # Development: Allow localhost origins
+    # Development: Allow localhost origins (app default port is 8765 per CLAUDE.md)
     cors_origins = [
-        "http://localhost:8080",
-        "http://localhost:3000",
-        "http://127.0.0.1:8080",
+        "http://localhost:8765",
+        "http://127.0.0.1:8765",
     ]
 
 app.add_middleware(
@@ -1475,16 +1484,24 @@ def verify_wallet_auth(
         verify_key.verify(message_bytes, signature_bytes)
 
     except nacl.exceptions.BadSignatureError:
-        raise HTTPException(status_code=401, detail="Invalid signature")
+        raise HTTPException(status_code=401, detail="Authentication failed")
     except Exception as e:
+        logger.warning("auth.wallet_verify: failed exc=%s", e)
         raise HTTPException(
-            status_code=401, detail=f"Signature verification failed: {str(e)}"
+            status_code=401, detail="Authentication failed"
         )
 
     # 4. Check if this wallet has a receiver_id, create if not exists
     receiver = db.get(ReceiverId, auth.publicKey)
     is_new = False
     if receiver is None:
+        # Validate publicKey as a real Solana address before persisting it as
+        # the auto-populated pay_to_address. Defense-in-depth: signature
+        # verification above already proves cryptographic format, but this
+        # explicitly rejects any non-base58 / wrong-length input before write.
+        if not validate_solana_address(auth.publicKey):
+            raise HTTPException(status_code=400, detail="Invalid Solana address")
+
         # Auto-register wallet on first sign-in
         receiver_id = secrets.token_urlsafe(16)
         receiver = ReceiverId(
@@ -1841,7 +1858,11 @@ async def update_pay_to_address(
 
     # Validate wallet address (basic Solana address validation)
     if len(new_pay_to) < 32 or len(new_pay_to) > 44:
-        raise HTTPException(status_code=400, detail="Invalid Solana wallet address")
+        raise HTTPException(status_code=400, detail="Invalid Solana address")
+
+    # Strict validation: must decode as a valid Solana Pubkey
+    if not validate_solana_address(new_pay_to):
+        raise HTTPException(status_code=400, detail="Invalid Solana address")
 
     # Prevent self-donations: payment address cannot be the same as account wallet
     if new_pay_to == receiver.public_key:
@@ -2486,8 +2507,35 @@ async def submit_donation(
     }
 
 
+# Privacy score cache (per-wallet, 1-hour TTL, bounded LRU-ish eviction).
+# In-memory only; intentionally not persisted across restarts.
+from collections import OrderedDict as _ScoreOrderedDict
+
+_PRIVACY_SCORE_CACHE: "OrderedDict[str, tuple[float, dict]]" = _ScoreOrderedDict()
+_PRIVACY_SCORE_CACHE_TTL = 3600  # 1 hour
+_PRIVACY_SCORE_CACHE_MAX = 1000
+
+
+def _privacy_cache_get(wallet: str):
+    entry = _PRIVACY_SCORE_CACHE.get(wallet)
+    if entry is None:
+        return None
+    ts, val = entry
+    if time.time() - ts < _PRIVACY_SCORE_CACHE_TTL:
+        return val
+    # Expired - evict
+    _PRIVACY_SCORE_CACHE.pop(wallet, None)
+    return None
+
+
+def _privacy_cache_set(wallet: str, val: dict) -> None:
+    _PRIVACY_SCORE_CACHE[wallet] = (time.time(), val)
+    while len(_PRIVACY_SCORE_CACHE) > _PRIVACY_SCORE_CACHE_MAX:
+        _PRIVACY_SCORE_CACHE.popitem(last=False)
+
+
 @app.post("/api/wallet-privacy-score")
-@limiter.limit("5/minute")
+@limiter.limit("2/minute")
 async def score_wallet_privacy(request: Request):
     """
     Analyze wallet and return privacy score (0-100)
@@ -2517,6 +2565,12 @@ async def score_wallet_privacy(request: Request):
         if not wallet:
             raise HTTPException(status_code=400, detail="Wallet address required")
 
+        # Cache hit? Skip the Helius call.
+        cached = _privacy_cache_get(wallet)
+        if cached is not None:
+            logger.info(f"privacy.score.cache_hit: wallet={wallet[:8]}...")
+            return cached
+
         logger.info(f"🔍 Privacy scoring request for wallet: {wallet[:8]}...")
 
         # Score the wallet
@@ -2524,7 +2578,9 @@ async def score_wallet_privacy(request: Request):
 
         logger.info(f"✅ Privacy score: {score.score}/100 ({score.grade})")
 
-        return score.to_dict()
+        result = score.to_dict()
+        _privacy_cache_set(wallet, result)
+        return result
 
     except HTTPException:
         raise
