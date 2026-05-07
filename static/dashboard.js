@@ -1,3 +1,6 @@
+// Import security utilities
+import { escapeHtml } from '/security-utils.js';
+
 // Fix secure context issue: redirect 0.0.0.0 to localhost
 if (window.location.hostname === "0.0.0.0") {
   console.log(
@@ -231,6 +234,7 @@ class ModerationDashboard {
         rate: parseFloat(document.getElementById("ttsRate").value),
         pitch: parseFloat(document.getElementById("ttsPitch").value),
         volume: parseFloat(document.getElementById("ttsVolume").value),
+        notification_sound_enabled: document.getElementById("notificationSoundEnabled").checked,
       };
 
       console.log("💾 Saving TTS settings:", settings);
@@ -269,7 +273,8 @@ class ModerationDashboard {
   }
 
   connect() {
-    const wsUrl = `ws://${window.location.host}/ws/dashboard`;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/dashboard`;
     this.ws = new WebSocket(wsUrl);
 
     this.ws.onopen = () => {
@@ -460,17 +465,16 @@ class ModerationDashboard {
                         <td>${this.formatTime(
                           donation.timestamp || donation.created_at,
                         )}</td>
-                        <td>${
+                        <td>${escapeHtml(
                           donation.sender_name ||
                           this.truncateAddress(donation.sender) ||
                           "Unknown"
-                        }</td>
+                        )}</td>
                         <td>$${parseFloat(donation.amount).toFixed(2)}</td>
-                        <td>${
+                        <td>${escapeHtml(
                           donation.message ||
-                          donation.memo ||
-                          "<span>No message</span>"
-                        }${donation.status === "playing" ? " <span>📺</span>" : ""}</td>
+                          donation.memo
+                        ) || "<span>No message</span>"}${donation.status === "playing" ? " <span>📺</span>" : ""}</td>
                         <td>
                             ${
                               this.currentTab === "pending"
@@ -691,6 +695,9 @@ class ModerationDashboard {
     }
   }
 
+  /* DEAD CODE - No UI elements exist for sync functionality (no syncBtn or syncStatus elements)
+   * Candidate for deletion after testing period
+   *
   async loadSyncStatus() {
     try {
       const response = await fetch("/api/sync/status");
@@ -766,8 +773,50 @@ class ModerationDashboard {
       }, 3000);
     }
   }
+  */
 
   async exportCSV() {
+    this.showCSVWarningModal();
+  }
+
+  showCSVWarningModal() {
+    const modal = document.getElementById('csvWarningModal');
+    const checkbox = document.getElementById('csvWarningCheckbox');
+    const confirmBtn = document.getElementById('csvWarningConfirm');
+    const cancelBtn = document.getElementById('csvWarningCancel');
+
+    checkbox.checked = false;
+    confirmBtn.disabled = true;
+
+    const handleCheckboxChange = () => {
+      confirmBtn.disabled = !checkbox.checked;
+    };
+
+    const handleCancel = () => {
+      modal.style.display = 'none';
+      cleanup();
+    };
+
+    const handleConfirm = async () => {
+      modal.style.display = 'none';
+      cleanup();
+      await this.performCSVExport();
+    };
+
+    const cleanup = () => {
+      checkbox.removeEventListener('change', handleCheckboxChange);
+      cancelBtn.removeEventListener('click', handleCancel);
+      confirmBtn.removeEventListener('click', handleConfirm);
+    };
+
+    checkbox.addEventListener('change', handleCheckboxChange);
+    cancelBtn.addEventListener('click', handleCancel);
+    confirmBtn.addEventListener('click', handleConfirm);
+
+    modal.style.display = 'flex';
+  }
+
+  async performCSVExport() {
     try {
       const response = await fetch("/api/export/csv");
       if (!response.ok) {
@@ -896,6 +945,8 @@ class ModerationDashboard {
         document.getElementById("ttsRate").value = config.tts_settings.rate;
         document.getElementById("ttsPitch").value = config.tts_settings.pitch;
         document.getElementById("ttsVolume").value = config.tts_settings.volume;
+        document.getElementById("notificationSoundEnabled").checked =
+          config.tts_settings.notification_sound_enabled ?? true;
 
         // Update displayed values
         this.updateTTSValues();
@@ -1033,9 +1084,38 @@ class ModerationDashboard {
     }
   }
 
+  showObsModal() {
+    // Populate the overlay URL in the modal
+    const urlInput = document.getElementById("obsOverlayUrl");
+    if (urlInput && this.overlayUrl) {
+      urlInput.value = this.overlayUrl;
+    }
+
+    // Show the modal
+    const modal = document.getElementById("obsSetupModal");
+    if (modal) {
+      modal.style.display = "flex";
+    }
+  }
+
+  closeObsModal() {
+    const modal = document.getElementById("obsSetupModal");
+    if (modal) {
+      modal.style.display = "none";
+    }
+  }
+
+  copyOverlayUrl() {
+    const urlInput = document.getElementById("obsOverlayUrl");
+    if (urlInput) {
+      urlInput.select();
+      document.execCommand("copy");
+      alert("✅ Overlay URL copied to clipboard!");
+    }
+  }
+
   openOverlayWindow() {
     // Open overlay in a popup window sized for OBS
-    // Common OBS canvas sizes: 1920x1080 (Full HD), but overlay typically smaller
     const width = 800;
     const height = 600;
     const left = (screen.width - width) / 2;
@@ -1056,6 +1136,7 @@ class ModerationDashboard {
 let dashboard;
 window.addEventListener("DOMContentLoaded", () => {
   dashboard = new ModerationDashboard();
+  window.dashboard = dashboard;  // Explicit global exposure for onclick handlers
 });
 
 function get_unix_time(dateStr) {

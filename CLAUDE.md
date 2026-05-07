@@ -34,6 +34,18 @@ The server runs on http://localhost:8765 by default (PORT env var).
 - `ENCRYPTION_KEY` - Required for encrypting donation messages (base64)
 - `PAY_TO_ADDRESS` - Default payment recipient wallet (can be overridden per-user)
 
+## Production Deployment
+
+For production deployments, set these additional environment variables:
+
+- `ENVIRONMENT=production` - Enables strict security policies (CORS, WebSocket origin validation)
+- `PRODUCTION_ORIGIN=https://your-domain.com` - Your public-facing domain (required when ENVIRONMENT=production)
+
+Production requirements:
+- HTTPS proxy (nginx/Caddy) required for secure cookies
+- Set `ENVIRONMENT=production` to enable strict origin validation
+- Configure `PRODUCTION_ORIGIN` to match your public domain
+
 ## Architecture
 
 ### Backend (app.py)
@@ -63,15 +75,15 @@ Client-side version (`static/privacy-scorer.js`) mirrors this logic.
 
 ## Key Design Decisions
 
-1. **Privacy-first storage**: Donation records do NOT store wallet addresses, transaction signatures, or timestamps to prevent deanonymization via blockchain explorers.
+1. **Privacy-first storage**: Donation records do NOT store wallet addresses or transaction signatures. Only date (not time) is stored to prevent timing correlation attacks with blockchain data.
 
 2. **On-chain verification**: Payment verification happens directly against Solana blockchain, not via facilitator service. This eliminates timing/blockhash staleness issues.
 
-3. **Replay attack prevention**: Transaction signatures are tracked in-memory for 24 hours to prevent double-submission.
+3. **Replay attack prevention**: Transaction signatures are tracked in database for 48 hours to prevent double-submission.
 
 4. **Per-user payment addresses**: Users must configure `pay_to_address` separate from their login wallet. Self-donations (same wallet) are blocked.
 
-5. **Session management**: Cookie-based sessions with 7-day expiry for HTTP endpoints, 1-hour expiry for WebSocket connections.
+5. **Session management**: Cookie-based sessions with 7-day expiry for both HTTP endpoints and WebSocket connections.
 
 ## API Authentication
 

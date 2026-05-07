@@ -12,13 +12,16 @@ import hashlib
 import logging
 import csv
 import io
+import re
+import traceback
 from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Set, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
+from urllib.parse import urlparse
 
 # Third-party imports
-import aiohttp
 import base58
+import hmac
 import httpx
 import nacl.exceptions
 import nacl.signing
@@ -35,15 +38,19 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import (
     Column,
     String,
     Float,
     Integer,
     DateTime,
+    Date,
     Boolean,
     create_engine,
     TypeDecorator,
@@ -147,8 +154,6 @@ class SolanaX402:
 
     async def verify_payment(self, payment_header: str) -> dict:
         """Verify x402 payment with facilitator.x402.rs"""
-        import time
-
         try:
             logger.info(f"🔍 Verifying payment with: {self.facilitator_url}/verify")
 
@@ -179,8 +184,6 @@ class SolanaX402:
 
             # Decode transaction to count instructions
             try:
-                import base64
-
                 tx_bytes = base64.b64decode(tx_b64)
                 logger.info(f"   - Transaction size: {len(tx_bytes)} bytes")
             except Exception as decode_err:
@@ -230,8 +233,6 @@ class SolanaX402:
         except Exception as e:
             logger.error(f"❌ Facilitator exception: {e}")
             logger.error(f"   - Exception type: {type(e).__name__}")
-            import traceback
-
             logger.error(f"   - Traceback: {traceback.format_exc()[:500]}")
             return {"valid": False, "error": str(e)}
 
@@ -247,7 +248,6 @@ class SolanaX402:
         This replaces facilitator verification with direct on-chain verification.
         Eliminates timing issues with blockhash staleness.
         """
-        import time
         from solders.signature import Signature  # type: ignore
 
         try:
@@ -700,6 +700,43 @@ FACILITATOR_URL = os.getenv("FACILITATOR_URL", "https://facilitator.x402.rs")
 PAY_TO_ADDRESS = os.getenv("PAY_TO_ADDRESS")
 PORT = int(os.getenv("PORT", "8765"))
 
+# RPC method allowlist for /api/helius/rpc
+ALLOWED_RPC_METHODS = {
+    "getLatestBlockhash",
+    "getSignatureStatuses",
+    "getAccountInfo",
+    "getTokenAccountBalance",
+    "getTransaction",
+    "sendTransaction",  # Required for broadcasting signed donation transactions
+}
+
+
+def validate_websocket_origin(websocket: WebSocket) -> bool:
+    """Verify WebSocket Origin matches Host (CSRF protection).
+
+    Args:
+        websocket: WebSocket connection to validate
+
+    Returns:
+        True if origin is allowed, False otherwise
+    """
+    origin = websocket.headers.get("origin")
+    host = websocket.headers.get("host")
+
+    if not origin:
+        # Require origin header for security
+        return False
+
+    origin_host = urlparse(origin).netloc
+
+    # In production, only allow exact host match
+    if os.getenv("ENVIRONMENT") == "production":
+        return origin_host == host
+
+    # In development, allow localhost
+    allowed = {host, "localhost:8765", "127.0.0.1:8765"}
+    return origin_host in allowed
+
 
 def debug_ctx(context: str, **fields):
     """
@@ -744,6 +781,12 @@ class ReceiverId(Base):
     tts_rate = Column(Float, default=1.0, nullable=False)
     tts_pitch = Column(Float, default=1.0, nullable=False)
     tts_volume = Column(Float, default=1.0, nullable=False)
+
+    # Notification Settings
+    notification_sound_enabled = Column(Boolean, default=True, nullable=False)
+
+    # Overlay API Key (persistent, user can regenerate)
+    overlay_api_key = Column(String, nullable=True)  # Auto-generated on first use
 
     def to_dict(self):
         return {
@@ -804,8 +847,8 @@ class Donation(Base):
     # Multi-user support: which receiver this donation is for
     receiver_id = Column(String, nullable=True)  # NULL for legacy donations
 
-    # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow)
+    # Timestamps (date-only for privacy - prevents correlation with blockchain timing)
+    created_at = Column(Date, default=date.today)
 
     # Moderation fields
     status = Column(String, default="pending")  # pending, approved, rejected
@@ -821,6 +864,7 @@ class Donation(Base):
             "message": self.message,  # Auto-decrypted by TypeDecorator
             "amount": self.amount,
             "token_symbol": self.token_symbol,
+            "receiver_id": self.receiver_id,  # Required for overlay broadcasting
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "status": self.status,
             "moderated_at": (
@@ -828,6 +872,19 @@ class Donation(Base):
             ),
             "source": self.source,
         }
+
+
+class UsedSignature(Base):
+    """Track used transaction signatures to prevent replay attacks.
+
+    Persists across server restarts. Auto-cleaned after 48 hours.
+    """
+
+    __tablename__ = "used_signatures"
+
+    signature = Column(String, primary_key=True)
+    used_at = Column(DateTime, default=datetime.utcnow, index=True)
+    receiver_id = Column(String, nullable=False, index=True)
 
 
 # Database setup
@@ -913,8 +970,6 @@ def verify_donation_ownership(donation: Donation, receiver_id: str) -> None:
 
 # Constants
 # AI16Z_MINT = "HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC"  # Future: multi-token X402 support
-HELIUS_BASE = "https://api.helius.xyz/v0"
-RPC_BASE = "https://mainnet.helius-rpc.com"
 # MEMO_PID = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"  # Legacy: memo parsing
 
 
@@ -929,6 +984,8 @@ async def lifespan(app: FastAPI):
     # Startup
     init_db()
     monitor_task = asyncio.create_task(monitor_new_donations())
+    cleanup_task = asyncio.create_task(cleanup_old_signatures())
+    challenge_cleanup_task = asyncio.create_task(cleanup_old_challenges())
     logger.info("server.startup: complete")
 
     yield
@@ -936,20 +993,25 @@ async def lifespan(app: FastAPI):
     # Shutdown - graceful cleanup
     logger.info("server.shutdown: begin")
 
-    # Cancel background monitor task
+    # Cancel background tasks
     monitor_task.cancel()
+    cleanup_task.cancel()
+    challenge_cleanup_task.cancel()
     try:
         await asyncio.wait_for(monitor_task, timeout=5.0)
+        await asyncio.wait_for(cleanup_task, timeout=5.0)
+        await asyncio.wait_for(challenge_cleanup_task, timeout=5.0)
     except (asyncio.CancelledError, asyncio.TimeoutError):
         pass
-    logger.info("server.shutdown: background_task_stopped")
+    logger.info("server.shutdown: background_tasks_stopped")
 
     # Close overlay WebSocket connections gracefully
-    for ws in overlay_connections[:]:
-        try:
-            await ws.close(code=1001, reason="Server shutting down")
-        except Exception:
-            pass
+    for receiver_id, connections in list(overlay_connections.items()):
+        for ws in connections[:]:
+            try:
+                await ws.close(code=1001, reason="Server shutting down")
+            except Exception:
+                pass
     overlay_connections.clear()
 
     # Close dashboard WebSocket connections gracefully
@@ -966,18 +1028,57 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Crypto SuperChat", version="1.0.0", lifespan=lifespan)
 
-# CORS - restricted for security
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+# Rate limiting
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# CORS - environment-based origins for security
+cors_origins = []
+if os.getenv("ENVIRONMENT") == "production":
+    # Production: Only allow configured production origin
+    production_origin = os.getenv("PRODUCTION_ORIGIN")
+    if production_origin:
+        cors_origins = [production_origin]
+    else:
+        logger.warning("⚠️  PRODUCTION_ORIGIN not set, CORS disabled")
+else:
+    # Development: Allow localhost origins
+    cors_origins = [
         "http://localhost:8080",
         "http://localhost:3000",
         "http://127.0.0.1:8080",
-    ],
+    ]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "x-402-payment"],
 )
+
+
+# Security headers middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add security headers to all responses."""
+    response = await call_next(request)
+
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' https://esm.sh; "
+        "connect-src 'self' wss: ws:; "
+        "img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; "
+        "frame-ancestors 'none'"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+    return response
+
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -993,8 +1094,8 @@ helius_client = HeliusClient(api_key=HELIUS_API_KEY) if HELIUS_API_KEY else None
 privacy_scorer = WalletPrivacyScorer(helius_api_key=HELIUS_API_KEY)
 
 # WebSocket connections
-# Overlay remains public (for OBS)
-overlay_connections: List[WebSocket] = []
+# Overlay connections scoped by receiver_id for multi-tenant isolation
+overlay_connections: Dict[str, List[WebSocket]] = {}  # receiver_id -> [ws1, ws2, ...]
 
 # Dashboard connections by receiver_id for multi-user support
 # Format: {receiver_id: [websocket1, websocket2, ...]}
@@ -1064,6 +1165,7 @@ class TTSSettingsRequest(BaseModel):
     rate: float = 1.0
     pitch: float = 1.0
     volume: float = 1.0
+    notification_sound_enabled: bool = True
 
     class Config:
         json_schema_extra = {
@@ -1073,18 +1175,13 @@ class TTSSettingsRequest(BaseModel):
                 "rate": 1.0,
                 "pitch": 1.0,
                 "volume": 1.0,
+                "notification_sound_enabled": True,
             }
         }
 
 
 # In-memory playing state (fast, ephemeral)
 currently_playing = None  # {signature: str, donation_data: dict}
-
-# Replay attack prevention: Track recently used transaction signatures
-# In-memory only (not persisted) for privacy - expires after 24 hours
-# Key: signature, Value: timestamp when used
-used_signatures: dict[str, float] = {}
-SIGNATURE_EXPIRY_HOURS = 24
 
 
 def get_current_user(request: Request, db: Session):
@@ -1113,32 +1210,32 @@ def get_current_user(request: Request, db: Session):
 
 
 @app.get("/")
-async def root():
+async def serve_index():
     return FileResponse("static/index.html")
 
 
 @app.get("/index.css")
-async def root():
-    return FileResponse("static/index.css")
+async def serve_index_css():
+    return FileResponse("static/index.css", media_type="text/css")
 
 
 @app.get("/index.js")
-async def root():
-    return FileResponse("static/index.js")
+async def serve_index_js():
+    return FileResponse("static/index.js", media_type="application/javascript")
 
 
 @app.get("/overlay")
-async def root():
+async def serve_overlay():
     return FileResponse("static/overlay.html")
 
 
 @app.get("/global.css")
-async def dashboard():
-    return FileResponse("static/global.css")
+async def serve_global_css():
+    return FileResponse("static/global.css", media_type="text/css")
 
 
 @app.get("/dashboard")
-async def dashboard():
+async def serve_dashboard():
     """
     Serve dashboard HTML.
     Auth is now handled client-side via wallet signatures (no cookies needed).
@@ -1147,13 +1244,13 @@ async def dashboard():
 
 
 @app.get("/dashboard.css")
-async def dashboard():
-    return FileResponse("static/dashboard.css")
+async def serve_dashboard_css():
+    return FileResponse("static/dashboard.css", media_type="text/css")
 
 
 @app.get("/dashboard.js")
-async def dashboard():
-    return FileResponse("static/dashboard.js")
+async def serve_dashboard_js():
+    return FileResponse("static/dashboard.js", media_type="application/javascript")
 
 
 @app.get("/donate/{identifier}")
@@ -1163,7 +1260,6 @@ async def serve_donate_page(identifier: str, db: Session = Depends(get_db)):
 
     # Redirect to username URL if user has username and we're on receiver_id URL
     # This ensures consistent URLs and better UX
-    from fastapi.responses import RedirectResponse
     if receiver.username and identifier == receiver.id:
         return RedirectResponse(url=f"/donate/{receiver.username}", status_code=301)
 
@@ -1173,8 +1269,6 @@ async def serve_donate_page(identifier: str, db: Session = Depends(get_db)):
 
     # Replace the default title with the identifier
     html = html.replace("<h1 id=\"pageTitle\">x402 Chat</h1>", f"<h1 id=\"pageTitle\">@{identifier}</h1>")
-
-    from fastapi.responses import HTMLResponse
     return HTMLResponse(content=html)
 
 
@@ -1191,13 +1285,13 @@ async def get_receiver_info(identifier: str, db: Session = Depends(get_db)):
 
 
 @app.get("/donate.css")
-async def donate():
-    return FileResponse("static/donate.css")
+async def serve_donate_css():
+    return FileResponse("static/donate.css", media_type="text/css")
 
 
 @app.get("/donate.js")
-async def donate():
-    return FileResponse("static/donate.js")
+async def serve_donate_js():
+    return FileResponse("static/donate.js", media_type="application/javascript")
 
 
 @app.get("/privacy-scorer.js")
@@ -1208,6 +1302,16 @@ async def serve_privacy_scorer_js():
 @app.get("/wallet-auth.js")
 async def wallet_auth():
     return FileResponse("static/wallet-auth.js", media_type="application/javascript")
+
+
+@app.get("/security-utils.js")
+async def serve_security_utils():
+    return FileResponse("static/security-utils.js", media_type="application/javascript")
+
+
+@app.get("/notification.mp3")
+async def serve_notification_sound():
+    return FileResponse("static/notification.mp3", media_type="audio/mpeg")
 
 
 @app.get("/favicon.svg")
@@ -1294,7 +1398,8 @@ load_whitelist()
 
 
 @app.post("/api/auth/challenge")
-async def auth_challenge(req: AuthChallengeRequest):
+@limiter.limit("10/minute")
+async def auth_challenge(request: Request, req: AuthChallengeRequest):
     # Note: Whitelist check disabled for beta - anyone can authenticate
     # Whitelist is still loaded and can be checked via API or file inspection
     # found = False
@@ -1381,18 +1486,20 @@ def verify_wallet_auth(
     is_new = False
     if receiver is None:
         # Auto-register wallet on first sign-in
-        import secrets
-
-        receiver_id = secrets.token_urlsafe(8)
-        receiver = ReceiverId(public_key=auth.publicKey, id=receiver_id)
+        receiver_id = secrets.token_urlsafe(16)
+        receiver = ReceiverId(
+            public_key=auth.publicKey,
+            id=receiver_id,
+            pay_to_address=auth.publicKey  # Default: donations go to sign-in wallet
+        )
         db.add(receiver)
         db.commit()
         is_new = True
         logger.info(f"auth.wallet.register: receiver_id={receiver_id} new_user=true")
         debug_ctx("auth.wallet.register.ctx", public_key=auth.publicKey)
 
-    # Check if user needs to configure payment address
-    needs_config = receiver.pay_to_address is None or receiver.pay_to_address == ""
+    # Config is optional now - users can always access it in dashboard
+    needs_config = False
 
     return receiver.id, needs_config
 
@@ -1430,7 +1537,7 @@ async def auth_verify(req: AuthVerifyRequest, db: Session = Depends(get_db)):
         rid = None
 
         if receiver is None:
-            rid = secrets.token_urlsafe(10)
+            rid = secrets.token_urlsafe(16)
             item = ReceiverId(public_key=req.publicKey, id=rid)
             db.add(item)
         else:
@@ -1446,7 +1553,7 @@ async def auth_verify(req: AuthVerifyRequest, db: Session = Depends(get_db)):
             httponly=True,  # JS cannot read it (prevents XSS stealing)
             secure=True,  # only send over HTTPS
             samesite="Lax",  # protects CSRF
-            max_age=3600,
+            max_age=604800,  # 7 days (matches server-side validation)
         )
 
         return res
@@ -1483,7 +1590,7 @@ async def wallet_verify(auth: WalletAuth, db: Session = Depends(get_db)):
         httponly=True,
         secure=True,
         samesite="Lax",
-        max_age=3600,
+        max_age=604800,  # 7 days (matches server-side validation)
     )
 
     return res
@@ -1496,17 +1603,22 @@ async def auth_id(request: Request, db: Session = Depends(get_db)):
 
 
 @app.get("/api/auth/clear")
-async def auth_clear(request: Request, db: Session = Depends(get_db)):
+async def auth_clear(request: Request, response: Response, db: Session = Depends(get_db)):
     session_id = request.cookies.get("session_id")
     found = db.get(AuthSession, session_id)
 
-    if found is None:
-        return {"ok": True}
+    if found:
+        db.delete(found)
+        db.commit()
 
-    db.delete(found)
-    db.commit()
+    response.delete_cookie(
+        key="session_id",
+        httponly=True,
+        secure=True,
+        samesite="lax"
+    )
 
-    # session_id = request.cookies.delete("session_id")
+    return RedirectResponse(url="/", status_code=303)
 
 
 @app.get("/api/config")
@@ -1544,7 +1656,11 @@ async def get_config(request: Request, db: Session = Depends(get_db)):
         or 0
     )
 
-    # Generate overlay URL with user's TTS settings
+    # Generate persistent overlay API key if not exists
+    if not receiver.overlay_api_key:
+        receiver.overlay_api_key = secrets.token_urlsafe(32)
+        db.commit()
+
     tts_params = []
     if not receiver.tts_enabled:
         tts_params.append("tts=false")
@@ -1556,10 +1672,12 @@ async def get_config(request: Request, db: Session = Depends(get_db)):
         tts_params.append(f"pitch={receiver.tts_pitch}")
     if receiver.tts_volume != 1.0:
         tts_params.append(f"volume={receiver.tts_volume}")
+    if not receiver.notification_sound_enabled:
+        tts_params.append("sound=false")
 
-    overlay_url = f"{request.base_url}overlay"
+    overlay_url = f"{request.base_url}overlay?rid={receiver.id}&key={receiver.overlay_api_key}"
     if tts_params:
-        overlay_url += "?" + "&".join(tts_params)
+        overlay_url += "&" + "&".join(tts_params)
 
     return {
         "x402_settings": {
@@ -1592,6 +1710,7 @@ async def get_config(request: Request, db: Session = Depends(get_db)):
             "rate": receiver.tts_rate,
             "pitch": receiver.tts_pitch,
             "volume": receiver.tts_volume,
+            "notification_sound_enabled": receiver.notification_sound_enabled,
         },
         "user": {
             "receiver_id": receiver.id,
@@ -1632,6 +1751,7 @@ async def update_tts_settings(
     receiver.tts_rate = tts_request.rate
     receiver.tts_pitch = tts_request.pitch
     receiver.tts_volume = tts_request.volume
+    receiver.notification_sound_enabled = tts_request.notification_sound_enabled
 
     db.commit()
 
@@ -1646,6 +1766,7 @@ async def update_tts_settings(
             "rate": receiver.tts_rate,
             "pitch": receiver.tts_pitch,
             "volume": receiver.tts_volume,
+            "notification_sound_enabled": receiver.notification_sound_enabled,
         },
     }
 
@@ -1789,12 +1910,60 @@ async def update_default_donation_amount(
     }
 
 
-@app.get("/api/events/playing")
-async def get_currently_playing():
-    """Get currently playing donation."""
+@app.post("/api/config/regenerate-overlay-key")
+async def regenerate_overlay_key(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Regenerate overlay API key for the authenticated user."""
+    receiver = get_current_user(request, db)
+
+    # Generate new persistent key
+    receiver.overlay_api_key = secrets.token_urlsafe(32)
+    db.commit()
+
+    logger.info(f"config.overlay_key.regenerated: receiver_id={receiver.id}")
+
+    # Return new overlay URL
+    tts_params = []
+    if not receiver.tts_enabled:
+        tts_params.append("tts=false")
+    if receiver.tts_voice_index != 0:
+        tts_params.append(f"voice={receiver.tts_voice_index}")
+    if receiver.tts_rate != 1.0:
+        tts_params.append(f"rate={receiver.tts_rate}")
+    if receiver.tts_pitch != 1.0:
+        tts_params.append(f"pitch={receiver.tts_pitch}")
+    if receiver.tts_volume != 1.0:
+        tts_params.append(f"volume={receiver.tts_volume}")
+    if not receiver.notification_sound_enabled:
+        tts_params.append("sound=false")
+
+    overlay_url = f"{request.base_url}overlay?rid={receiver.id}&key={receiver.overlay_api_key}"
+    if tts_params:
+        overlay_url += "&" + "&".join(tts_params)
+
     return {
-        "playing": currently_playing["donation_id"] if currently_playing else None,
-        "donation": currently_playing["donation_data"] if currently_playing else None,
+        "success": True,
+        "overlay_url": overlay_url,
+    }
+
+
+@app.get("/api/events/playing")
+async def get_currently_playing(request: Request, db: Session = Depends(get_db)):
+    """Get currently playing donation."""
+    receiver = get_current_user(request, db)
+
+    if not currently_playing:
+        return {"playing": None, "donation": None}
+
+    donation_data = currently_playing["donation_data"]
+    if donation_data.get("receiver_id") != receiver.id:
+        return {"playing": None, "donation": None}
+
+    return {
+        "playing": currently_playing["donation_id"],
+        "donation": donation_data,
     }
 
 
@@ -1850,7 +2019,28 @@ async def get_rejected_donations(request: Request, db: Session = Depends(get_db)
     return [d.to_dict() for d in donations]
 
 
+def csv_safe(value: str | None) -> str:
+    """Sanitize cell value to prevent CSV formula injection (OWASP).
+
+    Neutralizes values starting with = + - @ (after whitespace) and control
+    characters. Use with csv.writer for proper CSV formatting.
+    """
+    s = "" if value is None else str(value)
+    if not s:
+        return ""
+
+    stripped = s.lstrip()
+    if stripped and stripped[0] in ("=", "+", "-", "@"):
+        return "'" + s
+
+    if s[0] < " ":
+        return "'" + s
+
+    return s
+
+
 @app.get("/api/export/csv")
+@limiter.limit("3/hour")
 async def export_donations_csv(request: Request, db: Session = Depends(get_db)):
     """Export all donations to CSV format."""
     # Require authentication
@@ -1887,10 +2077,10 @@ async def export_donations_csv(request: Request, db: Session = Depends(get_db)):
             [
                 donation.id,
                 donation.created_at.isoformat() if donation.created_at else "",
-                donation.sender_name or "",
+                csv_safe(donation.sender_name or ""),
                 donation.amount,
                 donation.token_symbol or "",
-                donation.message or "",
+                csv_safe(donation.message or ""),
                 donation.status,
                 donation.moderated_at.isoformat() if donation.moderated_at else "",
             ]
@@ -1926,7 +2116,7 @@ async def play_donation(
 
     # Hide any currently playing donation
     if currently_playing:
-        await broadcast_hide_donation(currently_playing["donation_id"])
+        await broadcast_hide_donation(currently_playing["donation_id"], receiver.id)
 
     # Set as currently playing (in-memory only) - use id
     identifier = str(donation.id)
@@ -1968,7 +2158,7 @@ async def approve_donation(
 
     # Hide from overlay - use id (signature no longer stored)
     identifier = str(donation.id)
-    await broadcast_hide_donation(identifier)
+    await broadcast_hide_donation(identifier, receiver.id)
 
     # Clear playing state
     currently_playing = None
@@ -1995,7 +2185,7 @@ async def reject_donation(
     # If this donation is currently playing, stop it
     if currently_playing and currently_playing["donation_id"] == moderation_request.donation_id:
         # Hide from overlay
-        await broadcast_hide_donation(moderation_request.donation_id)
+        await broadcast_hide_donation(moderation_request.donation_id, receiver.id)
         # Clear playing state
         currently_playing = None
 
@@ -2034,7 +2224,9 @@ async def restore_donation(
 
 # x402 Donation API
 @app.post("/api/donate/{identifier}")
+@limiter.limit("5/minute")
 async def submit_donation(
+    request: Request,
     identifier: str,
     donation_request: DonationRequest,
     db: Session = Depends(get_db),
@@ -2045,6 +2237,9 @@ async def submit_donation(
     Args:
         identifier: Either username or receiver_id (tries username first)
     """
+
+    # Sanitize sender_name (remove HTML-dangerous characters)
+    donation_request.sender_name = re.sub(r'[<>"\'`]', '', donation_request.sender_name)[:12]
 
     # Validate identifier exists and get payment address (supports username or receiver_id)
     receiver = get_receiver_by_username_or_id(db, identifier)
@@ -2148,25 +2343,18 @@ async def submit_donation(
         raise HTTPException(status_code=402, detail="No transaction signature provided")
 
     # Replay attack prevention: Check if signature already used
-    import time as time_module
+    current_time = time.time()
 
-    current_time = time_module.time()
+    # Check if this signature was already used (database check)
+    existing_sig = db.query(UsedSignature).filter(
+        UsedSignature.signature == transaction_signature
+    ).first()
 
-    # Clean up expired signatures
-    expired = [
-        sig
-        for sig, timestamp in used_signatures.items()
-        if current_time - timestamp > (SIGNATURE_EXPIRY_HOURS * 3600)
-    ]
-    for sig in expired:
-        del used_signatures[sig]
-
-    # Check if this signature was already used
-    if transaction_signature in used_signatures:
-        used_at = used_signatures[transaction_signature]
-        age_minutes = int((current_time - used_at) / 60)
+    if existing_sig:
+        age_seconds = (datetime.utcnow() - existing_sig.used_at).total_seconds()
+        age_minutes = int(age_seconds / 60)
         logger.error(
-            f"x402.replay_check: result=used_signature age_minutes={age_minutes}"
+            f"x402.replay_check: result=used_signature age_minutes={age_minutes} receiver_id={existing_sig.receiver_id}"
         )
         debug_ctx("x402.replay_check.ctx", signature=transaction_signature)
         raise HTTPException(
@@ -2187,8 +2375,6 @@ async def submit_donation(
     # expected_recipient is already set from receiver.get_payment_address() above
 
     # Start timing verification
-    import time
-
     verify_start = time.time()
 
     # NEW: Verify transaction directly on Solana blockchain
@@ -2273,9 +2459,14 @@ async def submit_donation(
     # Broadcast to dashboard for moderation (only to this receiver's dashboards)
     await broadcast_new_donation(donation.to_dict(), receiver.id)
 
-    # Mark signature as used (replay attack prevention)
-    used_signatures[transaction_signature] = current_time
-    logger.info("x402.replay_protect: signature_recorded=true")
+    # Mark signature as used in database (replay attack prevention)
+    used_sig = UsedSignature(
+        signature=transaction_signature,
+        receiver_id=receiver.id,
+    )
+    db.add(used_sig)
+    db.commit()
+    logger.info(f"x402.replay_protect: signature_recorded_db=true receiver_id={receiver.id}")
     debug_ctx("x402.replay_protect.ctx", signature=transaction_signature)
 
     logger.info(
@@ -2296,6 +2487,7 @@ async def submit_donation(
 
 
 @app.post("/api/wallet-privacy-score")
+@limiter.limit("5/minute")
 async def score_wallet_privacy(request: Request):
     """
     Analyze wallet and return privacy score (0-100)
@@ -2342,12 +2534,13 @@ async def score_wallet_privacy(request: Request):
 
 
 @app.post("/api/helius/rpc")
+@limiter.limit("30/minute")
 async def helius_rpc_proxy(request: Request):
     """
     Proxy for Helius RPC calls to keep API key server-side.
     Compatible with Solana web3.js Connection class.
 
-    Security: Required for transaction broadcasting and blockchain queries.
+    Security: Method allowlist prevents API abuse.
     This endpoint is necessary for the donation flow.
 
     Request body: JSON-RPC request object (single or batch)
@@ -2358,6 +2551,18 @@ async def helius_rpc_proxy(request: Request):
 
     try:
         body = await request.json()
+
+        # Validate RPC methods against allowlist
+        requests_list = body if isinstance(body, list) else [body]
+        methods = {req.get("method") for req in requests_list if isinstance(req, dict)}
+
+        if not methods.issubset(ALLOWED_RPC_METHODS):
+            disallowed = methods - ALLOWED_RPC_METHODS
+            raise HTTPException(
+                status_code=400,
+                detail=f"RPC methods not allowed: {list(disallowed)}. Allowed: {list(ALLOWED_RPC_METHODS)}"
+            )
+
         return await helius_client.rpc_call(body)
 
     except HTTPException:
@@ -2371,10 +2576,40 @@ async def helius_rpc_proxy(request: Request):
 # WebSocket endpoints
 @app.websocket("/ws")
 async def overlay_websocket(websocket: WebSocket):
-    """WebSocket for overlay - receives approved donations."""
+    """WebSocket for overlay - authenticated per-receiver connections."""
+
+    if not validate_websocket_origin(websocket):
+        await websocket.close(code=1008, reason="Origin not allowed")
+        logger.warning("ws.overlay.reject: bad_origin")
+        return
+
+    rid = websocket.query_params.get("rid")
+    api_key = websocket.query_params.get("key")
+
+    if not rid or not api_key:
+        await websocket.close(code=1008, reason="Authentication required")
+        logger.warning(f"ws.overlay.auth_failed: missing_params rid={rid}")
+        return
+
+    # Verify persistent API key against database
+    db = SessionLocal()
+    verified_rid = None
+    try:
+        receiver = db.query(ReceiverId).filter_by(id=rid).first()
+        if receiver and receiver.overlay_api_key and hmac.compare_digest(receiver.overlay_api_key, api_key):
+            verified_rid = receiver.id
+    finally:
+        db.close()
+
+    if not verified_rid:
+        await websocket.close(code=1008, reason="Invalid API key")
+        logger.warning(f"ws.overlay.auth_failed: invalid_key rid={rid}")
+        return
+
     await websocket.accept()
-    overlay_connections.append(websocket)
-    logger.info(f"ws.overlay.connect: total={len(overlay_connections)}")
+    logger.info(f"ws.overlay.connected: receiver_id={verified_rid}")
+
+    overlay_connections.setdefault(verified_rid, []).append(websocket)
 
     try:
         await websocket.send_json({"type": "connected"})
@@ -2386,8 +2621,10 @@ async def overlay_websocket(websocket: WebSocket):
                 await websocket.send_json({"type": "pong"})
 
     except WebSocketDisconnect:
-        overlay_connections.remove(websocket)
-        logger.info(f"ws.overlay.disconnect: remaining={len(overlay_connections)}")
+        overlay_connections[verified_rid].remove(websocket)
+        if not overlay_connections[verified_rid]:
+            del overlay_connections[verified_rid]
+        logger.info(f"ws.overlay.disconnected: receiver_id={verified_rid}")
 
 
 @app.websocket("/ws/dashboard")
@@ -2395,10 +2632,13 @@ async def dashboard_websocket(websocket: WebSocket, db: Session = Depends(get_db
     """WebSocket for dashboard - receives new pending donations (authenticated)."""
     receiver_id = None
     try:
-        # Authenticate before accepting connection
+        if not validate_websocket_origin(websocket):
+            await websocket.close(code=1008, reason="Origin not allowed")
+            logger.warning("ws.dashboard.reject: bad_origin")
+            return
+
         receiver_id = await verify_websocket_auth(websocket, db)
 
-        # Accept connection after authentication succeeds
         await websocket.accept()
 
         # Add to receiver's connection list
@@ -2497,15 +2737,55 @@ async def broadcast_new_donation(donation_data: dict, receiver_id: str):
 
 
 async def broadcast_approved_donation(donation_data: dict):
-    """Broadcast approved donation to overlay."""
+    """Broadcast approved donation to specific receiver's overlays only."""
+    receiver_id = donation_data.get("receiver_id")
+    if not receiver_id:
+        logger.warning("broadcast.skip: no receiver_id in donation_data")
+        return
+
+    connections = overlay_connections.get(receiver_id, [])
+    if not connections:
+        logger.info(f"broadcast.skip: receiver_id={receiver_id} no_connections")
+        return
+
     message = {"type": "donation", "data": donation_data}
-    await broadcast_to_connections(overlay_connections, message, "overlays")
+
+    disconnected = []
+    for ws in connections:
+        try:
+            await ws.send_json(message)
+        except Exception as e:
+            logger.info(f"ws.broadcast.error: error={e}")
+            disconnected.append(ws)
+
+    for ws in disconnected:
+        connections.remove(ws)
+
+    logger.info(f"ws.broadcast.sent: receiver_id={receiver_id} count={len(connections)}")
 
 
-async def broadcast_hide_donation(signature: str):
-    """Broadcast hide donation to overlay."""
+async def broadcast_hide_donation(signature: str, receiver_id: str = None):
+    """Broadcast hide donation to specific receiver's overlays only."""
+    if not receiver_id:
+        logger.warning("broadcast.hide.skip: no receiver_id provided")
+        return
+
+    connections = overlay_connections.get(receiver_id, [])
+    if not connections:
+        return
+
     message = {"type": "hide_donation", "signature": signature}
-    await broadcast_to_connections(overlay_connections, message, "overlays")
+
+    disconnected = []
+    for ws in connections:
+        try:
+            await ws.send_json(message)
+        except Exception as e:
+            logger.info(f"ws.broadcast.error: error={e}")
+            disconnected.append(ws)
+
+    for ws in disconnected:
+        connections.remove(ws)
 
 
 # Background monitoring for new donations
@@ -2547,6 +2827,55 @@ async def monitor_new_donations():
         finally:
             if db:
                 db.close()
+
+
+async def cleanup_old_signatures():
+    """Remove signature records older than 48 hours.
+
+    Runs every hour to prevent unbounded database growth.
+    """
+    while True:
+        try:
+            await asyncio.sleep(3600)
+
+            db = SessionLocal()
+            try:
+                cutoff = datetime.utcnow() - timedelta(hours=48)
+                deleted = db.query(UsedSignature).filter(
+                    UsedSignature.used_at < cutoff
+                ).delete()
+                db.commit()
+
+                if deleted > 0:
+                    logger.info(f"cleanup.signatures: removed={deleted} older_than=48h")
+            finally:
+                db.close()
+
+        except Exception as e:
+            logger.error(f"cleanup.signatures.error: {e}", exc_info=True)
+
+
+async def cleanup_old_challenges():
+    """Remove challenge tokens older than 5 minutes.
+
+    Runs every 5 minutes to prevent unbounded memory growth from abandoned auth attempts.
+    """
+    while True:
+        try:
+            await asyncio.sleep(300)  # 5 minutes
+
+            cutoff = time.time() - 300  # 5 minute TTL
+            removed = 0
+            for key in list(challenges.keys()):
+                if challenges[key]["timestamp"] < cutoff:
+                    del challenges[key]
+                    removed += 1
+
+            if removed > 0:
+                logger.info(f"cleanup.challenges: removed={removed} older_than=5m")
+
+        except Exception as e:
+            logger.error(f"cleanup.challenges.error: {e}", exc_info=True)
 
 
 # ============================================================================
@@ -2619,10 +2948,10 @@ def export_donations_csv_cli():
                     [
                         donation.id,
                         donation.created_at.isoformat() if donation.created_at else "",
-                        donation.sender_name or "",
+                        csv_safe(donation.sender_name or ""),
                         donation.amount,
                         donation.token_symbol or "",
-                        donation.message or "",
+                        csv_safe(donation.message or ""),
                         donation.status,
                         (
                             donation.moderated_at.isoformat()

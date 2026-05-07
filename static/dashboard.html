@@ -6,15 +6,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>x402 Chat / Dashboard</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="global.css">
-  <link rel="stylesheet" href="dashboard.css">
-  <script src="dashboard.js"></script>
+  <link rel="stylesheet" href="/global.css">
+  <link rel="stylesheet" href="/dashboard.css">
+  <script type="module" src="/dashboard.js"></script>
 </head>
 
 <body>
   <div class="container-lg">
     <header class="floating-header">
-      <h2>Dashboard</h2>
+      <h2><a href="#pending" style="color: inherit; text-decoration: none; cursor: pointer;">Dashboard</a></h2>
 
       <nav class="header-nav">
         <a id="donateLink" href="#" target="_blank">
@@ -25,7 +25,7 @@
             <line x1="10" y1="14" x2="21" y2="3"></line>
           </svg>
         </a>
-        <a id="overlayLink" href="/overlay" onclick="dashboard.openOverlayWindow(); return false;">
+        <a id="overlayLink" href="/overlay" onclick="dashboard.showObsModal(); return false;">
           Overlay
           <svg class="external-link-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
@@ -198,6 +198,13 @@
               </div>
 
               <div class="config-item">
+                <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                  <input type="checkbox" id="notificationSoundEnabled">
+                  <span>Enable Notification Sound (Ding)</span>
+                </label>
+              </div>
+
+              <div class="config-item">
                 <label>Voice:</label>
                 <select id="ttsVoice" onchange="dashboard.updateTTSValues()">
                   <option value="0">Loading voices...</option>
@@ -255,6 +262,67 @@
         </div>
       </div>
     </main>
+  </div>
+
+  <div id="obsSetupModal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <h2>🎥 OBS Overlay Setup</h2>
+
+      <div style="margin: 1.5rem 0;">
+        <h3 style="margin-bottom: 0.5rem;">Overlay URL</h3>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <input type="text" id="obsOverlayUrl" readonly style="flex: 1; padding: 0.5rem; border: 1px solid var(--border); background: var(--bg-secondary); color: var(--text); border-radius: 0.375rem; font-family: monospace; font-size: 0.875rem;">
+          <button onclick="dashboard.copyOverlayUrl()" class="primary-button">📋 Copy</button>
+        </div>
+      </div>
+
+      <div style="background: var(--bg-secondary); padding: 1rem; border-radius: 0.375rem; margin: 1.5rem 0;">
+        <h3 style="margin-bottom: 0.75rem;">Setup Instructions</h3>
+        <ol style="margin-left: 1.5rem; line-height: 1.8;">
+          <li>Open OBS Studio</li>
+          <li>Click the <strong>+</strong> button in the Sources panel</li>
+          <li>Select <strong>"Browser"</strong></li>
+          <li>Name it "x402 Donations" (or whatever you prefer)</li>
+          <li>Paste the overlay URL above into the <strong>URL</strong> field</li>
+          <li>Set Width: <strong>800px</strong>, Height: <strong>600px</strong></li>
+          <li>Click <strong>OK</strong></li>
+        </ol>
+      </div>
+
+      <div style="background: #ff4444; color: white; padding: 1rem; border-radius: 0.375rem; margin: 1.5rem 0;">
+        <h3 style="margin-bottom: 0.5rem;">⚠️ Security Warning</h3>
+        <p style="margin: 0;"><strong>Do NOT share this URL!</strong> Anyone with this link can view your donations in real-time. Keep it private like a password.</p>
+        <p style="margin: 0.5rem 0 0 0; font-size: 0.875rem;">If compromised, regenerate your key in the Config tab.</p>
+      </div>
+
+      <div class="modal-buttons">
+        <button onclick="dashboard.closeObsModal()" class="secondary-button">Close</button>
+        <button onclick="dashboard.openOverlayWindow()" class="primary-button">🔗 Test in Browser</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="csvWarningModal" class="modal" style="display: none;">
+    <div class="modal-content warning-modal">
+      <h2>⚠️ CSV Export Privacy Warning</h2>
+      <p>This CSV file contains <strong>sensitive donor information</strong>:</p>
+      <ul>
+        <li><strong>Donation messages</strong> - private messages from your supporters</li>
+        <li><strong>Sender names</strong> - may contain identifying information</li>
+        <li><strong>Donation amounts and timestamps</strong> - could enable pattern analysis</li>
+      </ul>
+      <p class="warning-text"><strong>Important:</strong> Keep this file secure. Do not share it publicly or with untrusted parties. Treat your supporters' data with care.</p>
+
+      <label class="checkbox-label">
+        <input type="checkbox" id="csvWarningCheckbox">
+        I understand the privacy implications and will keep this file secure
+      </label>
+
+      <div class="modal-buttons">
+        <button id="csvWarningCancel" class="secondary-button">Cancel</button>
+        <button id="csvWarningConfirm" class="primary-button" disabled>Download CSV</button>
+      </div>
+    </div>
   </div>
 </body>
 

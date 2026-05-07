@@ -545,24 +545,28 @@ class WalletPrivacyScorer:
 
         return count
 
-    def get_wallet_age_days(self, tx_history: List[Dict]) -> int:
-        """Calculate wallet age from first transaction"""
-        if not tx_history:
-            return 0
-
-        # Find oldest transaction
-        oldest_timestamp = None
-        for tx in tx_history:
-            timestamp = tx.get("timestamp")
-            if timestamp:
-                if oldest_timestamp is None or timestamp < oldest_timestamp:
-                    oldest_timestamp = timestamp
-
-        if oldest_timestamp is None:
-            return 0
-
-        age_seconds = time.time() - oldest_timestamp
-        return int(age_seconds / 86400)
+    # DEAD CODE - Unused method, duplicates logic in analyze_transaction_patterns()
+    # score_wallet() uses patterns["wallet_age_days"] instead (line 121)
+    # Candidate for deletion after testing period
+    #
+    # def get_wallet_age_days(self, tx_history: List[Dict]) -> int:
+    #     """Calculate wallet age from first transaction"""
+    #     if not tx_history:
+    #         return 0
+    #
+    #     # Find oldest transaction
+    #     oldest_timestamp = None
+    #     for tx in tx_history:
+    #         timestamp = tx.get("timestamp")
+    #         if timestamp:
+    #             if oldest_timestamp is None or timestamp < oldest_timestamp:
+    #                 oldest_timestamp = timestamp
+    #
+    #     if oldest_timestamp is None:
+    #         return 0
+    #
+    #     age_seconds = time.time() - oldest_timestamp
+    #     return int(age_seconds / 86400)
 
     def _is_nft(self, token: Dict) -> bool:
         """Check if token is an NFT (heuristic: amount = 1, decimals = 0)"""

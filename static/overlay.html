@@ -177,7 +177,10 @@
     </div>
   </div>
 
-  <script>
+  <script type="module">
+    // Import security utilities
+    import { escapeHtml, escapeAttr } from '/security-utils.js';
+
     class SuperchatOverlay {
       constructor() {
         this.ws = null;
@@ -236,12 +239,17 @@
         this.ttsVolume = parseFloat(params.get('volume') ||
                                     localStorage.getItem('ttsVolume') || '1');
 
+        // Notification sound enabled (default: true)
+        this.notificationSoundEnabled = params.get('sound') !== 'false' &&
+                                        localStorage.getItem('notificationSound') !== 'false';
+
         console.log("🔧 TTS settings:", {
           enabled: this.ttsEnabled,
           voiceIndex: this.ttsVoiceIndex,
           rate: this.ttsRate,
           pitch: this.ttsPitch,
-          volume: this.ttsVolume
+          volume: this.ttsVolume,
+          notificationSound: this.notificationSoundEnabled
         });
       }
 
@@ -281,9 +289,18 @@
 
       connect() {
         const params = new URLSearchParams(window.location.search);
-        const backendHost = params.get("backend") ||
-          window.location.host;
-        const wsUrl = `ws://${backendHost}/ws`;
+        const rid = params.get("rid");
+        const key = params.get("key");
+
+        if (!rid || !key) {
+          console.error("❌ Overlay requires authentication (rid/key missing)");
+          document.body.innerHTML = '<div style="color:white;padding:2rem;text-align:center;">Error: Overlay authentication missing. Please use the URL from your dashboard.</div>';
+          return;
+        }
+
+        // Use protocol-relative WebSocket with persistent API key
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws?rid=${encodeURIComponent(rid)}&key=${encodeURIComponent(key)}`;
         this.ws = new WebSocket(wsUrl);
 
         this.ws.onopen = () => {
@@ -302,8 +319,12 @@
         };
 
         this.ws.onclose = () => {
-          console.log("❌ Overlay disconnected");
+          console.log("❌ Overlay disconnected, reconnecting...");
           setTimeout(() => this.connect(), 3000);
+        };
+
+        this.ws.onerror = (error) => {
+          console.error("❌ WebSocket error:", error);
         };
       }
 
@@ -323,16 +344,23 @@
         const identifier = donation.signature || donation.id;
         superchatEl.dataset.signature = identifier;
 
+        // Generate unique IDs for this donation
+        const timestamp = Date.now();
+        const typedId = `typed-${timestamp}`;
+        const caretId = `caret-${timestamp}`;
+
+        // Escape all user-controlled content to prevent XSS
+        const safeSenderName = escapeHtml(donation.sender_name || "Anon");
+        const safeAmount = parseFloat(donation.amount).toFixed(2);
+        const safeMessage = escapeAttr(donation.message || donation.memo || "");
+
         superchatEl.innerHTML = `
                     <div class="sc-header">
-                        <span class="sc-name">${donation.sender_name || "Anon"
-          }</span>
+                        <span class="sc-name">${safeSenderName}</span>
                         <span class="sc-sent"> sent </span>
-                        <span class="sc-amount">$${parseFloat(donation.amount).toFixed(2)
-          }</span>
+                        <span class="sc-amount">$${safeAmount}</span>
                     </div>
-                    <div class="sc-msg" id="typed-${Date.now()}" data-message="${donation.message || donation.memo || ""
-          }"></div><span class="caret" id="caret-${Date.now()}"></span>
+                    <div class="sc-msg" id="${typedId}" data-message="${safeMessage}"></div><span class="caret" id="${caretId}"></span>
                 `;
 
         // Clear container and add new superchat
@@ -357,11 +385,13 @@
       }
 
       speakDonation(donation) {
-        const senderName = donation.sender_name || "Anonymous";
+        // SAFE: SpeechSynthesis API treats input as plain text
+        // HTML entities are handled correctly (e.g. "&lt;" spoken as "less than")
+        const senderName = escapeHtml(donation.sender_name || "Anonymous");
         const amount = parseFloat(donation.amount).toFixed(2);
-        const message = donation.message || donation.memo || "";
+        const message = escapeHtml(donation.message || donation.memo || "");
 
-        // Construct TTS text
+        // Construct TTS text (plain text only, no HTML)
         const ttsText = `${senderName} sent ${amount} dollars. ${message}`;
 
         console.log("🗣️ Speaking:", ttsText);
@@ -369,8 +399,13 @@
       }
 
       playNotificationSound() {
+        if (!this.notificationSoundEnabled) {
+          console.log("🔇 Notification sound disabled");
+          return;
+        }
+
         try {
-          const audio = new Audio("/static/notification.mp3");
+          const audio = new Audio("/notification.mp3");
           audio.volume = 0.5; // 50% volume
           audio.play().catch((e) => {
             console.log("Audio play failed:", e);
@@ -384,7 +419,7 @@
       hideDonation(signature) {
         console.log("🗑️ Hiding donation:", signature);
         const superchatEl = this.container.querySelector(
-          `[data-signature="${signature}"]`,
+          `[data-signature="${CSS.escape(signature)}"]`,
         );
         if (superchatEl) {
           superchatEl.classList.add("hide");

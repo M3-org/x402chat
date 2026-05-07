@@ -12,6 +12,7 @@ import {
   getAssociatedTokenAddressSync,
 } from "https://esm.sh/@solana/spl-token@0.4.9";
 import { scoreWalletPrivacy } from "/privacy-scorer.js";
+import { escapeHtml, escapeAttr } from '/security-utils.js';
 
 // Fix secure context issue: redirect 0.0.0.0 to localhost
 if (window.location.hostname === "0.0.0.0") {
@@ -169,7 +170,7 @@ function displayPrivacyScore(score) {
       <div class="risks">
         <strong>⚠️ Privacy Risks:</strong>
         <ul>
-          ${score.risks.map((r) => `<li>${r}</li>`).join("")}
+          ${score.risks.map((r) => `<li>${escapeHtml(r)}</li>`).join("")}
         </ul>
       </div>
     `;
@@ -180,7 +181,7 @@ function displayPrivacyScore(score) {
       <div class="suggestions">
         <strong>Recommendations:</strong>
         <ul>
-          ${score.suggestions.map((s) => `<li>${s}</li>`).join("")}
+          ${score.suggestions.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}
         </ul>
         <p style="margin-top: 0.5rem;">
           <a href="https://www.privacycash.org/" target="_blank" rel="noopener noreferrer">
@@ -256,7 +257,7 @@ function displayPrivacyScore(score) {
   }</li>
           ${
     score.details.protocols && score.details.protocols.length > 0
-      ? `<li>Detected: ${score.details.protocols.join(", ")}</li>`
+      ? `<li>Detected: ${score.details.protocols.map(p => escapeHtml(p)).join(", ")}</li>`
       : "<li>No known protocols detected</li>"
   }
           <li>DEX swaps: ${score.details.swap_count || 0}</li>
@@ -679,9 +680,10 @@ async function payWithPhantom(event) {
     const done = await res2.json();
     const explorerUrl =
       `https://orb.helius.dev/tx/${signature}?tab=summary&cluster=mainnet-beta`;
+    const escapedUrl = escapeAttr(explorerUrl);
     console.log(`🔗 View transaction: ${explorerUrl}`);
     ok(
-      `🎉 Payment confirmed on-chain! Submitted for moderation (id ${done.donation_id}).<br><a href="${explorerUrl}" target="_blank" rel="noopener noreferrer">View on Helius Orb</a>`,
+      `🎉 Payment confirmed on-chain! Submitted for moderation (id ${done.donation_id}).<br><a href="${escapedUrl}" target="_blank" rel="noopener noreferrer">View on Helius Orb</a>`,
     );
     show("");
   } catch (e) {
