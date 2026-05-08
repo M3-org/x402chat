@@ -251,3 +251,31 @@ echo "Next steps:"
 echo "  1. Edit .env with your HELIUS_API_KEY"
 echo "  2. Visit https://your-domain.com or http://localhost:8765"
 echo ""
+
+ENV_VALUE=""
+if [ -f "$APP_DIR/.env" ]; then
+    ENV_VALUE=$(grep -E '^ENVIRONMENT=' "$APP_DIR/.env" | tail -n1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]')
+fi
+if [ -z "$ENV_VALUE" ]; then
+    ENV_VALUE="${ENVIRONMENT:-}"
+fi
+
+if [ "$ENV_VALUE" != "production" ]; then
+    echo "=========================================="
+    echo "  ⚠️  ENVIRONMENT NOT SET TO production"
+    echo "=========================================="
+    echo ""
+    echo "  The app is running in development mode. Some security checks"
+    echo "  remain permissive:"
+    echo "    • CORS allowlist is dev-only (localhost:8765)"
+    echo "    • WebSocket origin validation runs in dev mode"
+    echo ""
+    echo "  To enable strict production policies:"
+    echo "    1. Set ENVIRONMENT=production in $APP_DIR/.env"
+    echo "    2. Set PRODUCTION_ORIGIN=https://your-domain.com in .env"
+    echo "    3. Restart the service (sudo systemctl restart x402chat)"
+    echo ""
+    echo "  See CLAUDE.md (Production Deployment) for full deployment docs."
+    echo "=========================================="
+    echo ""
+fi
