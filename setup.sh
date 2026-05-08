@@ -252,7 +252,6 @@ echo "  1. Edit .env with your HELIUS_API_KEY"
 echo "  2. Visit https://your-domain.com or http://localhost:8765"
 echo ""
 
-# Detect ENVIRONMENT setting (prefer .env value, fall back to live env var)
 ENV_VALUE=""
 if [ -f "$APP_DIR/.env" ]; then
     ENV_VALUE=$(grep -E '^ENVIRONMENT=' "$APP_DIR/.env" | tail -n1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]')

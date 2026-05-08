@@ -14,6 +14,7 @@ import csv
 import io
 import re
 import traceback
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Set, Optional
 from datetime import datetime, timedelta, date
@@ -965,7 +966,6 @@ def verify_donation_ownership(donation: Donation, receiver_id: str) -> None:
 
 
 def validate_solana_address(addr: str) -> bool:
-    """Return True if `addr` is a valid Solana public key (base58, 32 bytes)."""
     try:
         from solders.pubkey import Pubkey  # type: ignore
         Pubkey.from_string(addr)
@@ -1053,7 +1053,7 @@ if os.getenv("ENVIRONMENT") == "production":
     else:
         logger.warning("⚠️  PRODUCTION_ORIGIN not set, CORS disabled")
 else:
-    # Development: Allow localhost origins (app default port is 8765 per CLAUDE.md)
+    # Development: Allow localhost origins
     cors_origins = [
         "http://localhost:8765",
         "http://127.0.0.1:8765",
@@ -1495,10 +1495,6 @@ def verify_wallet_auth(
     receiver = db.get(ReceiverId, auth.publicKey)
     is_new = False
     if receiver is None:
-        # Validate publicKey as a real Solana address before persisting it as
-        # the auto-populated pay_to_address. Defense-in-depth: signature
-        # verification above already proves cryptographic format, but this
-        # explicitly rejects any non-base58 / wrong-length input before write.
         if not validate_solana_address(auth.publicKey):
             raise HTTPException(status_code=400, detail="Invalid Solana address")
 
@@ -1856,11 +1852,6 @@ async def update_pay_to_address(
             detail="Payment address is required. You must set a wallet address to receive donations."
         )
 
-    # Validate wallet address (basic Solana address validation)
-    if len(new_pay_to) < 32 or len(new_pay_to) > 44:
-        raise HTTPException(status_code=400, detail="Invalid Solana address")
-
-    # Strict validation: must decode as a valid Solana Pubkey
     if not validate_solana_address(new_pay_to):
         raise HTTPException(status_code=400, detail="Invalid Solana address")
 
@@ -2507,12 +2498,8 @@ async def submit_donation(
     }
 
 
-# Privacy score cache (per-wallet, 1-hour TTL, bounded LRU-ish eviction).
-# In-memory only; intentionally not persisted across restarts.
-from collections import OrderedDict as _ScoreOrderedDict
-
-_PRIVACY_SCORE_CACHE: "OrderedDict[str, tuple[float, dict]]" = _ScoreOrderedDict()
-_PRIVACY_SCORE_CACHE_TTL = 3600  # 1 hour
+_PRIVACY_SCORE_CACHE: "OrderedDict[str, tuple[float, dict]]" = OrderedDict()
+_PRIVACY_SCORE_CACHE_TTL = 3600
 _PRIVACY_SCORE_CACHE_MAX = 1000
 
 
@@ -2523,14 +2510,13 @@ def _privacy_cache_get(wallet: str):
     ts, val = entry
     if time.time() - ts < _PRIVACY_SCORE_CACHE_TTL:
         return val
-    # Expired - evict
     _PRIVACY_SCORE_CACHE.pop(wallet, None)
     return None
 
 
 def _privacy_cache_set(wallet: str, val: dict) -> None:
     _PRIVACY_SCORE_CACHE[wallet] = (time.time(), val)
-    while len(_PRIVACY_SCORE_CACHE) > _PRIVACY_SCORE_CACHE_MAX:
+    if len(_PRIVACY_SCORE_CACHE) > _PRIVACY_SCORE_CACHE_MAX:
         _PRIVACY_SCORE_CACHE.popitem(last=False)
 
 
@@ -2565,7 +2551,6 @@ async def score_wallet_privacy(request: Request):
         if not wallet:
             raise HTTPException(status_code=400, detail="Wallet address required")
 
-        # Cache hit? Skip the Helius call.
         cached = _privacy_cache_get(wallet)
         if cached is not None:
             logger.info(f"privacy.score.cache_hit: wallet={wallet[:8]}...")
