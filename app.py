@@ -513,16 +513,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def _redact_url(url: str) -> str:
-    """Strip query string from a URL for safe logging.
-
-    Helius URLs carry `?api-key=<SECRET>` in the query; logging the raw URL
-    leaks the key (CodeQL py/clear-text-logging-sensitive-data).
-    """
-    try:
-        parsed = urlparse(url)
-        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-    except Exception:
-        return "<url-redaction-failed>"
+    """Helius RPC URLs carry the api-key in the query string."""
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 
 # ============================================================================
@@ -1279,18 +1272,13 @@ async def serve_donate_page(identifier: str, db: Session = Depends(get_db)):
     if receiver.username and identifier == receiver.id:
         return RedirectResponse(url=f"/donate/{receiver.username}", status_code=301)
 
-    # Read HTML and inject identifier to prevent flash
     with open("static/donate.html", "r") as f:
-        html_content = f.read()
-
-    # Replace the default title with the identifier; html-escape against
-    # reflected XSS via the path parameter (CodeQL py/reflective-xss).
-    safe_identifier = html_escape(identifier)
-    html_content = html_content.replace(
+        html = f.read()
+    html = html.replace(
         "<h1 id=\"pageTitle\">x402 Chat</h1>",
-        f"<h1 id=\"pageTitle\">@{safe_identifier}</h1>",
+        f"<h1 id=\"pageTitle\">@{html_escape(identifier)}</h1>",
     )
-    return HTMLResponse(content=html_content)
+    return HTMLResponse(content=html)
 
 
 @app.get("/api/receiver/{identifier}")
