@@ -1,0 +1,51 @@
+version: 2
+
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    # 7-day cooldown blocks rapid-fire malicious version uploads;
+    # 14-day for majors gives more review margin. Python analogue of
+    # pnpm 11's 24h minimum-release-age default.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    # Direct deps only — transitive bumps go through the lockfile.
+    allow:
+      - dependency-type: "direct"
+    # Bundle minor+patch updates into one PR per ecosystem to reduce review surface.
+    groups:
+      python-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    reviewers:
+      - "madjin"
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+      include: "scope"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
+    reviewers:
+      - "madjin"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(actions)"
+      include: "scope"
